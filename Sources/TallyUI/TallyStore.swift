@@ -11,15 +11,41 @@ public final class TallyStore {
     public private(set) var snapshot: MonthSnapshot?
     public private(set) var errorMessage: String?
     public private(set) var isRefreshing = false
-    public var goal = 1000
-    public var metric: PRMetric = .opened
-    public var refreshInterval: Duration = .seconds(15 * 60)
+    public var goal: Int {
+        didSet {
+            if goal < 1 { goal = 1 }
+            defaults.set(goal, forKey: Keys.goal)
+        }
+    }
+    public var metric: PRMetric {
+        didSet { defaults.set(metric.rawValue, forKey: Keys.metric) }
+    }
+    public var refreshMinutes: Int {
+        didSet {
+            defaults.set(refreshMinutes, forKey: Keys.refreshMinutes)
+            if schedule != nil { startSchedule() }
+        }
+    }
+
+    private enum Keys {
+        static let goal = "goal"
+        static let metric = "metric"
+        static let refreshMinutes = "refreshMinutes"
+    }
 
     private let fetch: Fetch
-    private var started = false
+    private let defaults: UserDefaults
+    private var schedule: Task<Void, Never>?
+    private var watchingWakes = false
 
-    public init(fetch: @escaping Fetch) {
+    public init(defaults: UserDefaults = .standard, fetch: @escaping Fetch) {
         self.fetch = fetch
+        self.defaults = defaults
+        let savedGoal = defaults.integer(forKey: Keys.goal)
+        goal = savedGoal > 0 ? savedGoal : 1000
+        metric = defaults.string(forKey: Keys.metric).flatMap(PRMetric.init(rawValue:)) ?? .opened
+        let savedMinutes = defaults.integer(forKey: Keys.refreshMinutes)
+        refreshMinutes = savedMinutes > 0 ? savedMinutes : 15
     }
 
     public var count: Int? { snapshot?.count(for: metric) }
@@ -61,21 +87,26 @@ public final class TallyStore {
 
     /// Begins refreshing on a schedule and after the Mac wakes. Safe to call more than once.
     public func start() {
-        guard !started else { return }
-        started = true
-        Task { [weak self] in
-            while let self {
-                await self.refresh()
-                // Retry failures soon; the network is often just coming back.
-                let delay = self.errorMessage == nil ? self.refreshInterval : .seconds(60)
-                try? await Task.sleep(for: delay)
-            }
-        }
+        if schedule == nil { startSchedule() }
+        guard !watchingWakes else { return }
+        watchingWakes = true
         Task { [weak self] in
             let wakes = NSWorkspace.shared.notificationCenter.notifications(named: NSWorkspace.didWakeNotification)
             for await _ in wakes.map({ _ in () }) {
                 try? await Task.sleep(for: .seconds(5))
                 await self?.refresh()
+            }
+        }
+    }
+
+    private func startSchedule() {
+        schedule?.cancel()
+        schedule = Task { [weak self] in
+            while !Task.isCancelled, let self {
+                await self.refresh()
+                // Retry failures soon; the network is often just coming back.
+                let delay: Duration = self.errorMessage == nil ? .seconds(self.refreshMinutes * 60) : .seconds(60)
+                try? await Task.sleep(for: delay)
             }
         }
     }

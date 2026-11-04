@@ -30,10 +30,62 @@ private actor Script {
     }
 }
 
+private func freshDefaults() -> UserDefaults {
+    let name = "PRTallyTests.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: name)!
+    defaults.removePersistentDomain(forName: name)
+    return defaults
+}
+
 @MainActor
 @Suite struct TallyStoreTests {
+    @Test func settingsDefaultToAThousandOpenedPRs() {
+        let store = TallyStore(defaults: freshDefaults()) { snapshot(opened: 0) }
+        #expect(store.goal == 1000)
+        #expect(store.metric == .opened)
+        #expect(store.refreshMinutes == 15)
+    }
+
+    @Test func settingsSurviveARestart() {
+        let defaults = freshDefaults()
+        let store = TallyStore(defaults: defaults) { snapshot(opened: 0) }
+        store.goal = 750
+        store.metric = .merged
+        store.refreshMinutes = 5
+        let restarted = TallyStore(defaults: defaults) { snapshot(opened: 0) }
+        #expect(restarted.goal == 750)
+        #expect(restarted.metric == .merged)
+        #expect(restarted.refreshMinutes == 5)
+    }
+
+    @Test func goalCannotDropBelowOne() {
+        let store = TallyStore(defaults: freshDefaults()) { snapshot(opened: 0) }
+        store.goal = 0
+        #expect(store.goal == 1)
+        store.goal = -5
+        #expect(store.goal == 1)
+    }
+
+    @Test func metricChoosesWhatTheMenuBarCounts() async {
+        let now = Date()
+        let pr = PullRequest(
+            id: "m", title: "", url: URL(string: "https://github.com")!, createdAt: now, mergedAt: now,
+            repository: .init(nameWithOwner: "me/app")
+        )
+        let store = TallyStore(defaults: freshDefaults()) {
+            MonthSnapshot(
+                login: "me", window: MonthWindow(containing: now), opened: [], merged: [pr, pr],
+                totalContributions: 0, fetchedAt: now
+            )
+        }
+        await store.refresh()
+        #expect(store.menuBarTitle == "0/1k")
+        store.metric = .merged
+        #expect(store.menuBarTitle == "2/1k")
+    }
+
     @Test func menuBarTitleShowsCountAndCompactGoal() async {
-        let store = TallyStore { snapshot(opened: 74) }
+        let store = TallyStore(defaults: freshDefaults()) { snapshot(opened: 74) }
         #expect(store.menuBarTitle == "–/1k")
         await store.refresh()
         #expect(store.menuBarTitle == "74/1k")
@@ -45,7 +97,7 @@ private actor Script {
 
     @Test func failedRefreshKeepsLastNumbersAndRecoveryClearsTheError() async {
         let script = Script([.success(snapshot(opened: 5)), .failure(Offline()), .success(snapshot(opened: 6))])
-        let store = TallyStore { try await script.next() }
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
         await store.refresh()
         await store.refresh()
         #expect(store.count == 5)
@@ -58,7 +110,7 @@ private actor Script {
     @Test func openingThePopoverSkipsRefreshWhenNumbersAreFresh() async {
         let now = Date()
         let script = Script([.success(snapshot(opened: 1, at: now))])
-        let store = TallyStore { try await script.next() }
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
         await store.refreshIfStale(now: now)
         await store.refreshIfStale(now: now.addingTimeInterval(30))
         #expect(await script.calls == 1)

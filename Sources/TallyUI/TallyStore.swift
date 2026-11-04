@@ -55,15 +55,15 @@ public final class TallyStore {
         return Pace(goal: goal, count: count, window: snapshot.window, at: now)
     }
 
-    /// Text shown in the menu bar, such as `74/1k`.
+    /// Text shown beside the menu bar ring.
     public var menuBarTitle: String {
-        "\(count.map(String.init) ?? "–")/\(Self.compact(goal))"
+        count.map { $0.formatted() } ?? "–"
     }
 
-    static func compact(_ goal: Int) -> String {
-        goal >= 1000 && goal % 100 == 0
-            ? (Double(goal) / 1000).formatted(.number.precision(.fractionLength(0...1))) + "k"
-            : String(goal)
+    /// What VoiceOver reads for the menu bar item, since the ring carries the goal visually.
+    public var menuBarAccessibilityLabel: String {
+        guard let pace = pace() else { return "PR Tally, loading" }
+        return "\(pace.count.formatted()) of \(pace.goal.formatted()) \(metric.noun). \(pace.statusText)"
     }
 
     /// A failed refresh keeps the last good numbers on screen and reports the error next to them.

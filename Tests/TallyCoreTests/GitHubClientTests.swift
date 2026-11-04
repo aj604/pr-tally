@@ -171,3 +171,16 @@ private func client(_ fake: FakeGitHub) -> GitHubClient {
         #expect(GitHubCLI.run("/bin/sleep", arguments: ["30"], timeout: 0.2) == nil)
     }
 }
+
+@Suite struct KeychainTokenTests {
+    @Test func savesReplacesAndDeletes() {
+        let keychain = KeychainToken(service: "com.aj604.prtally.tests.\(UUID().uuidString)")
+        defer { keychain.delete() }
+        #expect(keychain.read() == nil)
+        #expect(keychain.save("first"))
+        #expect(keychain.save("second"))
+        #expect(keychain.read() == "second")
+        keychain.delete()
+        #expect(keychain.read() == nil)
+    }
+}

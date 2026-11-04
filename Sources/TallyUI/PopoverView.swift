@@ -3,6 +3,7 @@ import TallyCore
 
 public struct PopoverView: View {
     @Bindable private var store: TallyStore
+    @State private var showingSettings = false
 
     public init(store: TallyStore) {
         self.store = store
@@ -11,7 +12,9 @@ public struct PopoverView: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
-            if let snapshot = store.snapshot, let pace = store.pace() {
+            if showingSettings {
+                SettingsView(store: store)
+            } else if let snapshot = store.snapshot, let pace = store.pace() {
                 progress(pace)
                 stats(snapshot: snapshot, pace: pace)
                 Divider()
@@ -98,12 +101,21 @@ public struct PopoverView: View {
             }
             .disabled(store.isRefreshing)
             .help("Refresh now")
+            .accessibilityLabel("Refresh now")
+            Button {
+                showingSettings.toggle()
+            } label: {
+                Image(systemName: showingSettings ? "gearshape.fill" : "gearshape")
+            }
+            .help("Settings")
+            .accessibilityLabel("Settings")
             Button {
                 NSApplication.shared.terminate(nil)
             } label: {
                 Image(systemName: "power")
             }
             .help("Quit PR Tally")
+            .accessibilityLabel("Quit PR Tally")
         }
         .buttonStyle(.borderless)
     }

@@ -128,6 +128,14 @@ private func client(_ fake: FakeGitHub) -> GitHubClient {
         #expect(result.todayCount(for: .opened, at: day3) == 2)
     }
 
+    @Test func runningTotalStopsAtToday() {
+        let day2 = monthStart.addingTimeInterval(86_400)
+        let result = snapshot([pr(1, createdAt: monthStart), pr(2, createdAt: day2), pr(3, createdAt: day2)])
+        #expect(result.cumulativeCounts(for: .opened, through: day2.addingTimeInterval(86_400)) == [1, 3, 3])
+        #expect(result.cumulativeCounts(for: .opened, through: window.end).count == 30)
+        #expect(result.cumulativeCounts(for: .opened, through: monthStart.addingTimeInterval(-1)).isEmpty)
+    }
+
     @Test func ranksRepositoriesByCountThenName() {
         let result = snapshot([
             pr(1, createdAt: now, repo: "me/b"), pr(2, createdAt: now, repo: "me/c"),

@@ -77,6 +77,17 @@ public struct MonthSnapshot: Sendable, Equatable {
         return counts
     }
 
+    /// Running total per day from the 1st through the day of `now`, omitting days still to come.
+    public func cumulativeCounts(for metric: PRMetric, through now: Date) -> [Int] {
+        let daily = dailyCounts(for: metric)
+        let days = now >= window.end ? daily.count : (window.dayIndex(of: now).map { $0 + 1 } ?? 0)
+        var total = 0
+        return daily.prefix(days).map { count in
+            total += count
+            return total
+        }
+    }
+
     public func todayCount(for metric: PRMetric, at now: Date) -> Int {
         guard let day = window.dayIndex(of: now) else { return 0 }
         return dailyCounts(for: metric)[day]

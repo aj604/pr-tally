@@ -14,6 +14,9 @@ public struct PopoverView: View {
             if let snapshot = store.snapshot, let pace = store.pace() {
                 progress(pace)
                 stats(snapshot: snapshot, pace: pace)
+                Divider()
+                MonthCharts(snapshot: snapshot, metric: store.metric, goal: store.goal, now: Date())
+                TopRepositories(repositories: snapshot.topRepositories(for: store.metric))
             } else if store.errorMessage == nil {
                 ProgressView("Counting your PRs…")
                     .controlSize(.small)

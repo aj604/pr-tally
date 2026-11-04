@@ -79,20 +79,29 @@ private func freshDefaults() -> UserDefaults {
             )
         }
         await store.refresh()
-        #expect(store.menuBarTitle == "0/1k")
+        #expect(store.menuBarTitle == "0")
         store.metric = .merged
-        #expect(store.menuBarTitle == "2/1k")
+        #expect(store.menuBarTitle == "2")
     }
 
-    @Test func menuBarTitleShowsCountAndCompactGoal() async {
+    @Test func menuBarShowsTheCountWithTheGoalLeftToTheRing() async {
         let store = TallyStore(defaults: freshDefaults()) { snapshot(opened: 74) }
-        #expect(store.menuBarTitle == "–/1k")
+        #expect(store.menuBarTitle == "–")
+        #expect(store.menuBarAccessibilityLabel == "PR Tally, loading")
         await store.refresh()
-        #expect(store.menuBarTitle == "74/1k")
+        #expect(store.menuBarTitle == "74")
+        #expect(store.menuBarAccessibilityLabel.hasPrefix("74 of 1,000 PRs opened."))
         store.goal = 1500
-        #expect(store.menuBarTitle == "74/1.5k")
-        store.goal = 250
-        #expect(store.menuBarTitle == "74/250")
+        #expect(store.menuBarAccessibilityLabel.hasPrefix("74 of 1,500 PRs opened."))
+    }
+
+    @Test func ringKeepsItsColorAndMatchesPaceStatus() {
+        let image = MenuBarGlyph.image(for: nil)
+        #expect(!image.isTemplate)
+        #expect(MenuBarGlyph.color(for: .behind) == .systemOrange)
+        #expect(MenuBarGlyph.color(for: .ahead) == .systemGreen)
+        #expect(MenuBarGlyph.color(for: .onPace) == .systemGreen)
+        #expect(MenuBarGlyph.color(for: .goalHit) == .systemGreen)
     }
 
     @Test func failedRefreshKeepsLastNumbersAndRecoveryClearsTheError() async {

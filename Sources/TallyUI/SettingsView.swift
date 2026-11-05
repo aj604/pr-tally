@@ -10,6 +10,7 @@ struct SettingsView: View {
     @State private var tokenDraft = ""
     @State private var hasSavedToken = KeychainToken.standard.read() != nil
     @State private var tokenFailed = false
+    @State private var notificationsDenied = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -35,6 +36,15 @@ struct SettingsView: View {
                 .labelsHidden()
                 .frame(width: 90)
             }
+            Toggle("Notify when I hit my goal", isOn: $store.notifiesOnGoal)
+                .font(.callout)
+                .toggleStyle(.switch)
+                .controlSize(.small)
+            if store.notifiesOnGoal, notificationsDenied {
+                Text("Notifications for PR Tally are off in System Settings > Notifications.")
+                    .font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Toggle("Launch at login", isOn: $launchAtLogin)
                 .font(.callout)
                 .toggleStyle(.switch)
@@ -47,6 +57,7 @@ struct SettingsView: View {
             Divider()
             token
         }
+        .task { notificationsDenied = await MilestoneNotifier.shared.isDenied() }
     }
 
     private var token: some View {

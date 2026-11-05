@@ -21,6 +21,10 @@ public final class TallyStore {
     public var metric: PRMetric {
         didSet { defaults.set(metric.rawValue, forKey: Keys.metric) }
     }
+    /// Whether reaching the goal sends a notification. On by default; the system asks permission the first time.
+    public var notifiesOnGoal: Bool {
+        didSet { defaults.set(notifiesOnGoal, forKey: Keys.notifiesOnGoal) }
+    }
     public var refreshMinutes: Int {
         didSet {
             defaults.set(refreshMinutes, forKey: Keys.refreshMinutes)
@@ -32,24 +36,33 @@ public final class TallyStore {
         static let goal = "goal"
         static let metric = "metric"
         static let refreshMinutes = "refreshMinutes"
+        static let notifiesOnGoal = "notifiesOnGoal"
+        /// The month key of the month whose goal has already been announced.
+        static let goalAnnounced = "goalAnnounced"
     }
 
     private let fetch: Fetch
     private let defaults: UserDefaults
     private let cache: SnapshotCache?
+    private let notify: (@MainActor (Milestone) -> Void)?
     private var schedule: Task<Void, Never>?
     private var watchingSystem = false
     /// Read by everything that depends on today's date, so it redraws at midnight even if the refresh then fails.
     private var dayChanges = 0
 
-    public init(defaults: UserDefaults = .standard, cache: SnapshotCache? = nil, fetch: @escaping Fetch) {
+    public init(
+        defaults: UserDefaults = .standard, cache: SnapshotCache? = nil,
+        notify: (@MainActor (Milestone) -> Void)? = nil, fetch: @escaping Fetch
+    ) {
         self.fetch = fetch
         self.defaults = defaults
         self.cache = cache
+        self.notify = notify
         snapshot = cache?.load()
         let savedGoal = defaults.integer(forKey: Keys.goal)
         goal = savedGoal > 0 ? savedGoal : 1000
         metric = defaults.string(forKey: Keys.metric).flatMap(PRMetric.init(rawValue:)) ?? .opened
+        notifiesOnGoal = defaults.object(forKey: Keys.notifiesOnGoal) as? Bool ?? true
         let savedMinutes = defaults.integer(forKey: Keys.refreshMinutes)
         refreshMinutes = savedMinutes > 0 ? savedMinutes : 15
     }
@@ -130,15 +143,27 @@ public final class TallyStore {
         let dayChangesAtStart = dayChanges
         do {
             let fetched = try await fetch()
+            let previous = snapshot
             snapshot = fetched
             errorMessage = nil
             cache?.save(fetched)
+            announceGoal(from: previous, to: fetched)
         } catch {
             errorMessage = error.localizedDescription
         }
         isRefreshing = false
         // A fetch that spanned midnight may have come back with the month that just ended.
         if dayChanges != dayChangesAtStart { await refresh() }
+    }
+
+    /// Tells the user once per month when the goal is reached, rather than on every refresh that finds it reached.
+    private func announceGoal(from previous: MonthSnapshot?, to fetched: MonthSnapshot) {
+        guard notifiesOnGoal, let notify,
+            let milestone = Milestone.goalReached(from: previous, to: fetched, metric: metric, goal: goal, at: Date()),
+            defaults.string(forKey: Keys.goalAnnounced) != fetched.window.monthKey
+        else { return }
+        defaults.set(fetched.window.monthKey, forKey: Keys.goalAnnounced)
+        notify(milestone)
     }
 
     /// Today's numbers and possibly the month just changed, whether or not GitHub can be reached.

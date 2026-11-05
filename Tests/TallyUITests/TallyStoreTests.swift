@@ -84,6 +84,7 @@ private final class InMemoryDefaults: UserDefaults, @unchecked Sendable {
     override func object(forKey key: String) -> Any? { lock.withLock { values[key] } }
     override func set(_ value: Any?, forKey key: String) { lock.withLock { values[key] = value } }
     override func set(_ value: Int, forKey key: String) { set(value as Any?, forKey: key) }
+    override func set(_ value: Bool, forKey key: String) { set(value as Any?, forKey: key) }
     override func integer(forKey key: String) -> Int { object(forKey: key) as? Int ?? 0 }
     override func string(forKey key: String) -> String? { object(forKey: key) as? String }
 }
@@ -567,8 +568,109 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
         #expect(await script.calls == 2)
         #expect(store.currentSnapshot()?.opened.count == 2)
     }
+
+    // MARK: Milestones
+
+    @Test func goalReachedBodyCountsTheDaysLeftAfterToday() {
+        let metric = PRMetric.opened
+        let before = monthSnapshot(openedByDay: [(november(16), 99)], at: november(16))
+        let after = monthSnapshot(openedByDay: [(november(16), 103)], at: november(16))
+        let milestone = Milestone.goalReached(from: before, to: after, metric: metric, goal: 100, at: november(16))
+        #expect(milestone == Milestone(title: "Goal hit 🎉", body: "103 PRs opened in November, with 14 days to spare."))
+        let nextToLast = november(29)
+        #expect(
+            Milestone.goalReached(from: before, to: after, metric: metric, goal: 100, at: nextToLast)?.body
+                == "103 PRs opened in November, with a day to spare."
+        )
+        #expect(
+            Milestone.goalReached(from: before, to: after, metric: metric, goal: 100, at: november(30))?.body
+                == "103 PRs opened in November, on the last day of the month."
+        )
+    }
+
+    @Test func goalReachedIsOnlyAnnouncedOnTheRefreshThatCrossesIt() async {
+        let sent = Sent()
+        let script = Script([
+            .success(snapshot(opened: 998)), .success(snapshot(opened: 999)), .success(snapshot(opened: 1000)),
+            .success(snapshot(opened: 1004)),
+        ])
+        let store = TallyStore(defaults: freshDefaults(), notify: { sent.milestones.append($0) }) {
+            try await script.next()
+        }
+        await store.refresh()  // The first numbers have nothing to be compared with.
+        await store.refresh()
+        #expect(sent.milestones.isEmpty)
+        await store.refresh()
+        #expect(sent.milestones.count == 1)
+        #expect(sent.milestones.first?.title == "Goal hit 🎉")
+        #expect(sent.milestones.first?.body.hasPrefix("1,000 PRs opened in ") == true)
+        await store.refresh()
+        #expect(sent.milestones.count == 1)
+    }
+
+    @Test func startingOverTheGoalOrLoweringItBelowTheCountIsNotAnAchievement() async {
+        let sent = Sent()
+        let script = Script([.success(snapshot(opened: 1200)), .success(snapshot(opened: 1201))])
+        let store = TallyStore(defaults: freshDefaults(), notify: { sent.milestones.append($0) }) {
+            try await script.next()
+        }
+        await store.refresh()
+        store.goal = 1100
+        await store.refresh()
+        #expect(sent.milestones.isEmpty)
+    }
+
+    @Test func goalReachedWhileTheAppWasClosedIsAnnouncedOnceAfterRelaunch() async {
+        let (cache, _) = freshCache()
+        let defaults = freshDefaults()
+        await TallyStore(defaults: defaults, cache: cache) { snapshot(opened: 990) }.refresh()
+        let sent = Sent()
+        let relaunched = TallyStore(defaults: defaults, cache: cache, notify: { sent.milestones.append($0) }) {
+            snapshot(opened: 1003)
+        }
+        await relaunched.refresh()
+        #expect(sent.milestones.count == 1)
+
+        // A PR dropping out and back in, or another relaunch, doesn't announce the same month's goal again.
+        let again = Script([.success(snapshot(opened: 999)), .success(snapshot(opened: 1000))])
+        let third = TallyStore(defaults: defaults, cache: cache, notify: { sent.milestones.append($0) }) {
+            try await again.next()
+        }
+        await third.refresh()
+        await third.refresh()
+        #expect(sent.milestones.count == 1)
+    }
+
+    @Test func lastMonthsNumbersAreNotACrossingThisMonth() async {
+        let (cache, _) = freshCache()
+        cache.save(snapshot(opened: 990, at: october31))
+        let sent = Sent()
+        let store = TallyStore(defaults: freshDefaults(), cache: cache, notify: { sent.milestones.append($0) }) {
+            snapshot(opened: 1000)
+        }
+        await store.refresh()
+        #expect(sent.milestones.isEmpty)
+    }
+
+    @Test func notificationsCanBeTurnedOffAndStayOff() async {
+        let defaults = freshDefaults()
+        let sent = Sent()
+        let script = Script([.success(snapshot(opened: 10)), .success(snapshot(opened: 1000))])
+        let store = TallyStore(defaults: defaults, notify: { sent.milestones.append($0) }) { try await script.next() }
+        #expect(store.notifiesOnGoal)
+        store.notifiesOnGoal = false
+        await store.refresh()
+        await store.refresh()
+        #expect(sent.milestones.isEmpty)
+        #expect(!TallyStore(defaults: defaults) { snapshot(opened: 0) }.notifiesOnGoal)
+    }
 }
 
 private final class Redraw: @unchecked Sendable {
     var fired = false
+}
+
+/// Collects what the store would have sent as notifications.
+@MainActor private final class Sent {
+    var milestones: [Milestone] = []
 }

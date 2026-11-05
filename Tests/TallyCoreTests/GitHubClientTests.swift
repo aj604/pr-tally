@@ -184,3 +184,291 @@ private func client(_ fake: FakeGitHub) -> GitHubClient {
         #expect(keychain.read() == nil)
     }
 }
+
+/// Answers requests from a real `URLSession`, so tests see what GitHub's status codes and headers do.
+private final class StubURLProtocol: URLProtocol, @unchecked Sendable {
+    typealias Response = (status: Int, headers: [String: String], body: Data)
+
+    /// Each stub is found through the request's token, so suites can run in parallel.
+    private nonisolated(unsafe) static var stubs: [String: @Sendable (Data) throws -> Response] = [:]
+    private static let lock = NSLock()
+
+    static func register(_ token: String, _ stub: @escaping @Sendable (Data) throws -> Response) {
+        lock.withLock { stubs[token] = stub }
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func stopLoading() {}
+
+    override func startLoading() {
+        let token = (request.value(forHTTPHeaderField: "Authorization") ?? "").replacingOccurrences(of: "bearer ", with: "")
+        let stub = Self.lock.withLock { Self.stubs[token] }
+        do {
+            let response = try stub!(requestBody())
+            client?.urlProtocol(
+                self,
+                didReceive: HTTPURLResponse(
+                    url: request.url!, statusCode: response.status, httpVersion: nil, headerFields: response.headers
+                )!,
+                cacheStoragePolicy: .notAllowed
+            )
+            client?.urlProtocol(self, didLoad: response.body)
+            client?.urlProtocolDidFinishLoading(self)
+        } catch {
+            client?.urlProtocol(self, didFailWithError: error)
+        }
+    }
+
+    /// URLSession hands protocols the body as a stream.
+    private func requestBody() -> Data {
+        guard let stream = request.httpBodyStream else { return request.httpBody ?? Data() }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while stream.hasBytesAvailable {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            guard count > 0 else { break }
+            data.append(buffer, count: count)
+        }
+        return data
+    }
+}
+
+private final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    /// Counts one more and returns the new total.
+    func next() -> Int {
+        lock.withLock {
+            value += 1
+            return value
+        }
+    }
+
+    var count: Int { lock.withLock { value } }
+}
+
+private final class TestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current: Date
+
+    init(_ start: Date) { current = start }
+
+    var now: Date {
+        get { lock.withLock { current } }
+        set { lock.withLock { current = newValue } }
+    }
+}
+
+@Suite struct GitHubHTTPTests {
+    private func http(
+        clock: TestClock = TestClock(now), retryDelays: [Duration] = [.zero, .zero],
+        _ stub: @escaping @Sendable (Data) throws -> StubURLProtocol.Response
+    ) -> GitHubClient {
+        let token = UUID().uuidString
+        StubURLProtocol.register(token, stub)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        return GitHubClient(
+            tokens: TokenProvider(override: { token }, cli: { nil }),
+            session: URLSession(configuration: configuration),
+            retryDelays: retryDelays,
+            now: { clock.now }
+        )
+    }
+
+    private func ok(_ fake: FakeGitHub, _ body: Data) throws -> StubURLProtocol.Response {
+        (200, [:], try fake.respond(to: body))
+    }
+
+    private func rateLimited(_ error: Error) -> Date? {
+        if case GitHubError.rateLimited(let until) = error { return until }
+        return nil
+    }
+
+    private func failure(of client: GitHubClient) async -> Error? {
+        do {
+            _ = try await client.fetchSnapshot(at: now, calendar: utc)
+            return nil
+        } catch {
+            return error
+        }
+    }
+
+    @Test func aBriefServerErrorDoesNotRestartTheFetch() async throws {
+        // Three pages of opened PRs; the request for one of them fails twice.
+        let fake = FakeGitHub(prs: (0..<250).map { pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 60)) })
+        let requests = Counter()
+        let failures = Counter()
+        let client = http { body in
+            _ = requests.next()
+            if String(decoding: body, as: UTF8.self).contains("\"after\":\"100\""), failures.next() <= 2 {
+                return (502, [:], Data("bad gateway".utf8))
+            }
+            return try ok(fake, body)
+        }
+        let snapshot = try await client.fetchSnapshot(at: now, calendar: utc)
+        #expect(snapshot.count(for: .opened) == 250)
+        // Viewer, three opened pages, one empty merged page, and two retries of the failed page.
+        #expect(requests.count == 7)
+    }
+
+    @Test func aDroppedConnectionIsRetried() async throws {
+        let fake = FakeGitHub(prs: [pr(1, createdAt: monthStart)])
+        let attempts = Counter()
+        let client = http { body in
+            if attempts.next() == 1 { throw URLError(.networkConnectionLost) }
+            return try ok(fake, body)
+        }
+        let snapshot = try await client.fetchSnapshot(at: now, calendar: utc)
+        #expect(snapshot.count(for: .opened) == 1)
+    }
+
+    @Test func aServerErrorThatPersistsIsReportedAfterTheRetriesRunOut() async {
+        let requests = Counter()
+        let client = http { _ in
+            _ = requests.next()
+            return (503, [:], Data())
+        }
+        let error = await failure(of: client)
+        #expect(error as? GitHubError == .http(503))
+        #expect(requests.count == 3)
+    }
+
+    @Test func aRejectedRequestIsNotRetried() async {
+        let requests = Counter()
+        let client = http { _ in
+            _ = requests.next()
+            return (404, [:], Data())
+        }
+        let error = await failure(of: client)
+        #expect(error as? GitHubError == .http(404))
+        #expect(requests.count == 1)
+    }
+
+    @Test func aRejectedTokenIsNotRetried() async {
+        let requests = Counter()
+        let client = http { _ in
+            _ = requests.next()
+            return (401, [:], Data())
+        }
+        let error = await failure(of: client)
+        #expect(error as? GitHubError == .unauthorized)
+        #expect(requests.count == 1)
+    }
+
+    @Test func aPlainForbiddenIsNotARateLimit() async {
+        let client = http { _ in (403, [:], Data(#"{"message":"Resource not accessible"}"#.utf8)) }
+        let error = await failure(of: client)
+        #expect(error as? GitHubError == .http(403))
+    }
+
+    @Test func secondaryLimitWaitsForRetryAfter() async {
+        let client = http { _ in
+            (403, ["Retry-After": "120"], Data(#"{"message":"You have exceeded a secondary rate limit."}"#.utf8))
+        }
+        let error = await failure(of: client)
+        #expect(error as? GitHubError == .rateLimited(until: now.addingTimeInterval(120)))
+    }
+
+    @Test func secondaryLimitWithNoHeadersWaitsAMinute() async {
+        let client = http { _ in (403, [:], Data(#"{"message":"You have exceeded a secondary rate limit."}"#.utf8)) }
+        let error = await failure(of: client)
+        #expect(error as? GitHubError == .rateLimited(until: now.addingTimeInterval(60)))
+    }
+
+    @Test func tooManyRequestsIsARateLimit() async {
+        let client = http { _ in (429, [:], Data()) }
+        let error = await failure(of: client)
+        #expect(error as? GitHubError == .rateLimited(until: now.addingTimeInterval(60)))
+    }
+
+    @Test func exhaustedBudgetWaitsForTheReset() async {
+        let reset = now.addingTimeInterval(1800)
+        let headers = ["X-RateLimit-Remaining": "0", "X-RateLimit-Reset": String(Int(reset.timeIntervalSince1970))]
+        let client = http { _ in (403, headers, Data()) }
+        let error = await failure(of: client)
+        #expect(error as? GitHubError == .rateLimited(until: reset))
+    }
+
+    @Test func graphQLRateLimitInASuccessfulResponseWaitsForTheReset() async {
+        let reset = now.addingTimeInterval(1800)
+        let headers = ["X-RateLimit-Remaining": "0", "X-RateLimit-Reset": String(Int(reset.timeIntervalSince1970))]
+        let body = Data(#"{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded for user ID 1."}]}"#.utf8)
+        let client = http { _ in (200, headers, body) }
+        let error = await failure(of: client)
+        #expect(error as? GitHubError == .rateLimited(until: reset))
+    }
+
+    @Test func theLastRequestInTheBudgetStillSucceeds() async throws {
+        let fake = FakeGitHub(prs: [pr(1, createdAt: monthStart)])
+        let client = http { body in
+            (200, ["X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1893456000"], try fake.respond(to: body))
+        }
+        let snapshot = try await client.fetchSnapshot(at: now, calendar: utc)
+        #expect(snapshot.count(for: .opened) == 1)
+    }
+
+    @Test func staysOffTheNetworkUntilTheLimitLifts() async throws {
+        let clock = TestClock(now)
+        let fake = FakeGitHub(prs: [pr(1, createdAt: monthStart)])
+        let requests = Counter()
+        let client = http(clock: clock) { body in
+            if requests.next() == 1 { return (429, ["Retry-After": "120"], Data()) }
+            return try ok(fake, body)
+        }
+
+        let lifts = now.addingTimeInterval(120)
+        for _ in 0..<3 {
+            let error = await failure(of: client)
+            #expect(error as? GitHubError == .rateLimited(until: lifts))
+        }
+        #expect(requests.count == 1)
+
+        clock.now = lifts
+        let snapshot = try await client.fetchSnapshot(at: now, calendar: utc)
+        #expect(snapshot.count(for: .opened) == 1)
+    }
+
+    @Test func aRateLimitTellsThePersonWhenItWillTryAgain() throws {
+        let until = now.addingTimeInterval(120)
+        let description = try #require(GitHubError.rateLimited(until: until).errorDescription)
+        #expect(description.contains(until.formatted(date: .omitted, time: .shortened)))
+    }
+}
+
+@Suite struct GitHubRetryTests {
+    @Test func retriesAreLimitedAndAppliedToAnyTransport() async {
+        let attempts = Counter()
+        let client = GitHubClient(
+            transport: { _ in
+                _ = attempts.next()
+                throw GitHubError.http(502)
+            },
+            retryDelays: [.zero, .zero]
+        )
+        await #expect(throws: GitHubError.http(502)) {
+            _ = try await client.fetchSnapshot(at: now, calendar: utc)
+        }
+        #expect(attempts.count == 3)
+    }
+
+    @Test func cancellingDuringARetryWaitStopsTheFetch() async {
+        let attempts = Counter()
+        let client = GitHubClient(
+            transport: { _ in
+                _ = attempts.next()
+                throw GitHubError.http(502)
+            },
+            retryDelays: [.seconds(60)]
+        )
+        let task = Task { try await client.fetchSnapshot(at: now, calendar: utc) }
+        while attempts.count == 0 { await Task.yield() }
+        task.cancel()
+        await #expect(throws: CancellationError.self) { _ = try await task.value }
+        #expect(attempts.count == 1)
+    }
+}

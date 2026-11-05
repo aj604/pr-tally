@@ -20,15 +20,15 @@ struct SettingsView: View {
         _savedTokenIsFineGrained = State(initialValue: savedToken.map(Self.isFineGrained) ?? false)
     }
 
-    /// GitHub's default new token is fine-grained, which is scoped to one account's repositories and, unless
-    /// told otherwise, to its public ones. Search then returns fewer PRs, with no error to say so.
+    /// GitHub's default new token is fine-grained, which belongs to one user or org. Whether search then leaves
+    /// out private repos under other owners is undocumented, so the warning says "can".
     static func isFineGrained(_ token: String) -> Bool {
         token.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("github_pat_")
     }
 
     static let fineGrainedWarning =
-        "Fine-grained tokens only reach one account's repositories, so counts can come up short without any error. "
-        + "A classic token with the `repo` scope reaches them all."
+        "A fine-grained token covers one account or org. If your PRs are in private repos under more than one, "
+        + "counts can come up short with no error. A classic token with the `repo` scope, authorized for any SSO orgs, covers them."
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -84,7 +84,7 @@ struct SettingsView: View {
             Text(
                 hasSavedToken
                     ? "Using the token saved in your keychain."
-                    : "Using your gh login. To use a different account, save a classic token with the `repo` scope."
+                    : "Using your gh login. To use a different account, save a classic token with the `repo` scope, authorized for any SSO orgs."
             )
             .font(.caption)
             .foregroundStyle(.secondary)

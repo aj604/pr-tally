@@ -17,6 +17,8 @@ import Testing
 
     @Test func theWarningNamesTheFixAndTheTokenKindThatNeedsIt() {
         #expect(SettingsView.fineGrainedWarning.contains("classic token with the `repo` scope"))
-        #expect(SettingsView.fineGrainedWarning.contains("Fine-grained"))
+        #expect(SettingsView.fineGrainedWarning.contains("fine-grained token"))
+        #expect(SettingsView.fineGrainedWarning.contains("authorized for any SSO orgs"))
+        #expect(SettingsView.fineGrainedWarning.contains("more than one"))
     }
 }

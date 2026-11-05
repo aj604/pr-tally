@@ -19,6 +19,24 @@ private func snapshot(opened: Int, at now: Date = Date()) -> MonthSnapshot {
     )
 }
 
+private func november(_ day: Int) -> Date {
+    Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: day, hour: 12))!
+}
+
+private func monthSnapshot(openedByDay: [(Date, Int)], at now: Date) -> MonthSnapshot {
+    let prs = openedByDay.flatMap { day, count in
+        (0..<count).map {
+            PullRequest(
+                id: "\(day)-\($0)", title: "", url: URL(string: "https://github.com")!, createdAt: day, mergedAt: nil,
+                repository: .init(nameWithOwner: "me/app")
+            )
+        }
+    }
+    return MonthSnapshot(
+        login: "me", window: MonthWindow(containing: now), opened: prs, merged: [], totalContributions: 0, fetchedAt: now
+    )
+}
+
 /// Replays results in order, repeating the last.
 private actor Script {
     private var results: [Result<MonthSnapshot, Error>]
@@ -79,25 +97,55 @@ private func freshDefaults() -> UserDefaults {
             )
         }
         await store.refresh()
-        #expect(store.menuBarTitle == "0")
+        #expect(store.menuBarTitle(at: now) == "0")
         store.metric = .merged
-        #expect(store.menuBarTitle == "2")
+        #expect(store.menuBarTitle(at: now) == "2")
     }
 
-    @Test func menuBarShowsTheCountWithTheGoalLeftToTheRing() async {
+    @Test func menuBarNumberCountsTodayNotTheMonth() async {
+        let now = november(16)
+        let store = TallyStore(defaults: freshDefaults()) {
+            monthSnapshot(openedByDay: [(november(3), 40), (now, 2)], at: now)
+        }
+        #expect(store.menuBarTitle(at: now) == "–")
+        await store.refresh()
+        #expect(store.menuBarTitle(at: now) == "2")
+        #expect(store.pace(at: now)?.count == 42)
+    }
+
+    @Test func menuBarNumberBeatsPaceOnlyWhenTodayPassesTheDailyQuota() async {
+        let now = november(16)
+        let store = TallyStore(defaults: freshDefaults()) {
+            monthSnapshot(openedByDay: [(now, 31)], at: now)
+        }
+        store.goal = 900
+        #expect(!store.menuBarBeatsPace(at: now))
+        await store.refresh()
+        #expect(store.menuBarBeatsPace(at: now))
+        store.goal = 930
+        #expect(!store.menuBarBeatsPace(at: now))
+    }
+
+    @Test func menuBarAccessibilityLabelReadsTodayThenTheMonth() async {
         let store = TallyStore(defaults: freshDefaults()) { snapshot(opened: 74) }
-        #expect(store.menuBarTitle == "–")
         #expect(store.menuBarAccessibilityLabel == "PR Tally, loading")
         await store.refresh()
-        #expect(store.menuBarTitle == "74")
-        #expect(store.menuBarAccessibilityLabel.hasPrefix("74 of 1,000 PRs opened."))
-        store.goal = 1500
-        #expect(store.menuBarAccessibilityLabel.hasPrefix("74 of 1,500 PRs opened."))
+        #expect(store.menuBarAccessibilityLabel.hasPrefix("74 today, beating the daily pace. 74 of 1,000 PRs opened."))
+        store.goal = 100_000
+        #expect(store.menuBarAccessibilityLabel.hasPrefix("74 today. 74 of 100,000 PRs opened."))
     }
 
-    @Test func ringKeepsItsColorAndMatchesPaceStatus() {
-        let image = MenuBarGlyph.image(for: nil)
-        #expect(!image.isTemplate)
+    @Test func menuBarImageKeepsItsColorsAndMakesRoomForAGreenNumber() {
+        let ring = MenuBarGlyph.image(for: nil)
+        let short = MenuBarGlyph.image(for: nil, greenTitle: "4")
+        let long = MenuBarGlyph.image(for: nil, greenTitle: "1,234")
+        #expect(!ring.isTemplate)
+        #expect(!short.isTemplate)
+        #expect(short.size.width > ring.size.width)
+        #expect(long.size.width > short.size.width)
+    }
+
+    @Test func ringMatchesPaceStatus() {
         #expect(MenuBarGlyph.color(for: .behind) == .systemOrange)
         #expect(MenuBarGlyph.color(for: .ahead) == .systemGreen)
         #expect(MenuBarGlyph.color(for: .onPace) == .systemGreen)

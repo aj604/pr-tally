@@ -55,15 +55,23 @@ public final class TallyStore {
         return Pace(goal: goal, count: count, window: snapshot.window, at: now)
     }
 
-    /// Text shown beside the menu bar ring.
-    public var menuBarTitle: String {
-        count.map { $0.formatted() } ?? "–"
+    /// Today's count, shown beside the menu bar ring.
+    public func menuBarTitle(at now: Date = Date()) -> String {
+        snapshot.map { $0.todayCount(for: metric, at: now).formatted() } ?? "–"
     }
 
-    /// What VoiceOver reads for the menu bar item, since the ring carries the goal visually.
+    /// Whether today's count has passed the daily quota, which turns the menu bar number green.
+    public func menuBarBeatsPace(at now: Date = Date()) -> Bool {
+        guard let snapshot, let pace = pace(at: now) else { return false }
+        return pace.beatsDailyQuota(today: snapshot.todayCount(for: metric, at: now))
+    }
+
+    /// What VoiceOver reads for the menu bar item, since the image carries the numbers visually.
     public var menuBarAccessibilityLabel: String {
-        guard let pace = pace() else { return "PR Tally, loading" }
-        return "\(pace.count.formatted()) of \(pace.goal.formatted()) \(metric.noun). \(pace.statusText)"
+        let now = Date()
+        guard let pace = pace(at: now) else { return "PR Tally, loading" }
+        let today = "\(menuBarTitle(at: now)) today\(menuBarBeatsPace(at: now) ? ", beating the daily pace" : "")"
+        return "\(today). \(pace.count.formatted()) of \(pace.goal.formatted()) \(metric.noun). \(pace.statusText)"
     }
 
     /// A failed refresh keeps the last good numbers on screen and reports the error next to them.

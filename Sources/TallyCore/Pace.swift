@@ -39,6 +39,11 @@ public struct Pace: Sendable, Equatable {
         return max(Int((Double(today) - dailyQuota).rounded(.up)), 0)
     }
 
+    /// Whether today's count went past the daily quota. Unlike `quotaSurplus`, this holds after the goal is hit.
+    public func beatsDailyQuota(today: Int) -> Bool {
+        Double(today) > dailyQuota
+    }
+
     /// Positive when ahead of a steady pace, negative when behind.
     public var delta: Int { count - expected }
 

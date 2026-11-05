@@ -17,9 +17,14 @@ struct PRTallyApp: App {
         MenuBarExtra {
             PopoverView(store: store)
         } label: {
+            let title = store.menuBarTitle()
             HStack(spacing: 4) {
-                Image(nsImage: MenuBarGlyph.image(for: store.pace()))
-                Text(store.menuBarTitle).monospacedDigit()
+                if store.menuBarBeatsPace() {
+                    Image(nsImage: MenuBarGlyph.image(for: store.pace(), greenTitle: title))
+                } else {
+                    Image(nsImage: MenuBarGlyph.image(for: store.pace()))
+                    Text(title).monospacedDigit()
+                }
             }
             .accessibilityLabel(store.menuBarAccessibilityLabel)
         }

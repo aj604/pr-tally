@@ -2,7 +2,7 @@
 
 A little macOS menu bar app that tracks your GitHub pull requests for the month against a goal, so you can see where you stand at a glance.
 
-The menu bar shows your count next to a progress ring. The ring is orange when you're behind pace and green when you're on or ahead of it, with a tick where a steady pace would be today. Click it for:
+The menu bar shows a progress ring for the month next to today's count. The ring is orange when you're behind pace and green when you're on or ahead of it, with a tick where a steady pace would be today. The number turns green once today's count beats the daily quota (goal ÷ days in the month). Click it for:
 
 - Progress against the goal, with a marker where a steady pace would be today
 - How far ahead or behind pace you are, PRs needed per day, and your projected month-end total

@@ -94,9 +94,11 @@ func renderRollover(to path: String) async throws {
         login: "me", window: MonthWindow(containing: lastMonth), opened: prs, merged: [], totalContributions: 0,
         fetchedAt: lastMonth
     )
-    let cache = SnapshotCache(url: FileManager.default.temporaryDirectory.appending(path: "\(UUID().uuidString).json"))
+    let url = FileManager.default.temporaryDirectory.appending(path: "\(UUID().uuidString).json")
+    defer { try? FileManager.default.removeItem(at: url) }
+    let cache = SnapshotCache(url: url)
     cache.save(snapshot)
-    let store = TallyStore(cache: cache) { throw Offline() }
+    let store = TallyStore(defaults: ScratchDefaults(), cache: cache) { throw Offline() }
     await store.refresh()
     let view = PopoverView(store: store).background(Color(nsColor: .windowBackgroundColor))
     try write(view, to: path)
@@ -132,7 +134,7 @@ func renderFixture(to path: String, listOpen: Bool) async throws {
     let snapshot = MonthSnapshot(
         login: "me", window: window, opened: earlier + today, merged: [], totalContributions: 612, fetchedAt: now
     )
-    let store = TallyStore(cache: nil) { snapshot }
+    let store = TallyStore(defaults: ScratchDefaults(), cache: nil) { snapshot }
     await store.refresh()
     if listOpen { store.screen = .pullRequests }
     let view = PopoverView(store: store)
@@ -197,6 +199,10 @@ if mode == "milestone" {
     try await renderRollover(to: path)
 } else if mode == "drilldown" || mode == "overview" {
     try await renderFixture(to: path, listOpen: mode == "drilldown")
-} else {
+} else if mode == "light" || mode == "dark" {
     try await renderPopover(to: path, scheme: mode == "dark" ? .dark : .light)
+} else {
+    // Only `light` and `dark` use your real login, so a mistyped fixture mode must not fall through to them.
+    FileHandle.standardError.write(Data("Unknown mode \(mode). Use light, dark, menubar, rollover, drilldown, overview or milestone.\n".utf8))
+    exit(2)
 }

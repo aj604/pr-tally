@@ -11,19 +11,26 @@ enum GitHubRateLimit {
 
     /// When to try again if `response` was rate limited, or nil if it wasn't.
     ///
-    /// `Retry-After` is read as a number of seconds only; an HTTP date is treated as absent.
+    /// `Retry-After` is read as a number of seconds only. On a 403 the header's presence is what
+    /// signals a limit, since no SSO or permission error carries it: a value that isn't a positive
+    /// whole number (an HTTP date, `0`, `inf`) still limits, for the 60s default.
     static func retryDate(for response: HTTPURLResponse, body: Data, now: Date) -> Date? {
-        let retryAfter = seconds(response.value(forHTTPHeaderField: "Retry-After"))
+        let retryAfterHeader = response.value(forHTTPHeaderField: "Retry-After")
+        let retryAfter = seconds(retryAfterHeader)
         let exhausted = response.value(forHTTPHeaderField: "X-RateLimit-Remaining") == "0"
         let limited =
             switch response.statusCode {
             case 429: true
             case 403:
-                // A message that says something else (SSO, permissions) wins over the headers.
-                if let message = (try? JSONDecoder().decode(Message.self, from: body))?.message {
+                // Only limits send Retry-After, whatever the message says. An exhausted budget is weaker
+                // evidence (the last request of the budget can fail for any reason), so a message
+                // that says something else (SSO, permissions) wins over it.
+                if retryAfterHeader != nil {
+                    true
+                } else if let message = (try? JSONDecoder().decode(Message.self, from: body))?.message {
                     isRateLimitMessage(message)
                 } else {
-                    retryAfter != nil || exhausted
+                    exhausted
                 }
             // GraphQL reports an exhausted budget as a successful response with an error in it.
             case 200: (try? JSONDecoder().decode(Failures.self, from: body))?.isRateLimited ?? false
@@ -51,11 +58,12 @@ enum GitHubRateLimit {
         return value
     }
 
-    /// GitHub's wording for primary and secondary limits. Other messages that merely mention limits
+    /// GitHub's wording for primary, secondary and abuse-detection limits. Other messages that merely mention limits
     /// (org settings, limited tokens) are not rate limits.
     private static func isRateLimitMessage(_ message: String) -> Bool {
         message.localizedCaseInsensitiveContains("API rate limit exceeded")
             || message.localizedCaseInsensitiveContains("secondary rate limit")
+            || message.localizedCaseInsensitiveContains("abuse detection")
     }
 
     private struct Message: Decodable { let message: String? }

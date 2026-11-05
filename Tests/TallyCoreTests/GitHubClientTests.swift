@@ -539,10 +539,59 @@ private struct HeaderCase: Sendable, CustomTestStringConvertible {
                 .utf8)
         let client = http { _ in
             _ = requests.next()
-            return (403, ["X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset, "Retry-After": "120"], body)
+            return (403, ["X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset], body)
         }
         for _ in 0..<2 { #expect(await failure(of: client) as? GitHubError == .http(403)) }
         #expect(requests.count == 2)
+    }
+
+    /// Messages a 403 limit might carry. The first two are abuse detection wording; the rest are
+    /// not wording the client recognises, so only a header can tell they are limits.
+    private static let abuse = [
+        "You have triggered an abuse detection mechanism and have been temporarily blocked from content creation. Please retry your request again later.",
+        "You have triggered an abuse detection mechanism. Please wait a few minutes before you try again.",
+    ]
+    private static let unrecognised = ["Rate limit exceeded", "Too many requests", "You have exceeded the rate limit", "Forbidden"]
+
+    private func forbidden(_ message: String, _ headers: [String: String]) -> StubURLProtocol.Response {
+        (403, headers, Data(#"{"message":"\#(message)"}"#.utf8))
+    }
+
+    @Test(arguments: abuse + unrecognised)
+    func aForbiddenWithRetryAfterIsALimitWhateverItsMessageSays(message: String) async throws {
+        try await expectLimit(forbidden(message, ["Retry-After": "60"]), until: now.addingTimeInterval(60))
+        try await expectLimit(forbidden(message, ["Retry-After": "3600", "X-RateLimit-Remaining": "4000"]), until: now.addingTimeInterval(3600))
+    }
+
+    @Test(arguments: abuse)
+    func abuseDetectionIsALimitWithoutAnyHeaders(message: String) async throws {
+        try await expectLimit(forbidden(message, [:]), until: now.addingTimeInterval(60))
+    }
+
+    @Test(arguments: unrecognised)
+    func aForbiddenWithUnrecognisedWordingAndNoHeaderIsNotALimit(message: String) async {
+        let requests = Counter()
+        let client = http { _ in
+            _ = requests.next()
+            return forbidden(message, ["X-RateLimit-Remaining": "4000"])
+        }
+        for _ in 0..<2 { #expect(await failure(of: client) as? GitHubError == .http(403)) }
+        #expect(requests.count == 2)
+    }
+
+    @Test func aPlainForbiddenWithRetryAfterIsALimit() async throws {
+        try await expectLimit((403, ["Retry-After": "3600", "X-RateLimit-Remaining": "4000"], Data()), until: now.addingTimeInterval(3600))
+    }
+
+    @Test(arguments: [
+        HeaderCase("120", 120), HeaderCase("99999999999", 3660),
+        HeaderCase("0", 60), HeaderCase("-500", 60), HeaderCase("1e308", 60), HeaderCase("inf", 60),
+        HeaderCase("nan", 60), HeaderCase("soon", 60), HeaderCase("Wed, 21 Oct 2037 07:28:00 GMT", 60),
+    ])
+    fileprivate func aForbiddenRetryAfterIsALimitWhateverItsValueOrMessage(header: HeaderCase) async throws {
+        let headers = ["Retry-After": header.value]
+        try await expectLimit((403, headers, Data()), until: now.addingTimeInterval(header.wait))
+        try await expectLimit(forbidden("Forbidden", headers), until: now.addingTimeInterval(header.wait))
     }
 
     @Test func aRateLimitTellsThePersonWhenItWillTryAgain() throws {

@@ -8,9 +8,27 @@ struct SettingsView: View {
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var launchMessage: String?
     @State private var tokenDraft = ""
-    @State private var hasSavedToken = KeychainToken.standard.read() != nil
+    @State private var hasSavedToken: Bool
+    @State private var savedTokenIsFineGrained: Bool
     @State private var tokenFailed = false
     @State private var notificationsDenied = false
+
+    /// `savedToken` is only looked at for what kind of token it is, and defaults to the keychain's.
+    init(store: TallyStore, savedToken: String? = KeychainToken.standard.read()) {
+        self.store = store
+        _hasSavedToken = State(initialValue: savedToken != nil)
+        _savedTokenIsFineGrained = State(initialValue: savedToken.map(Self.isFineGrained) ?? false)
+    }
+
+    /// GitHub's default new token is fine-grained, which is scoped to one account's repositories and, unless
+    /// told otherwise, to its public ones. Search then returns fewer PRs, with no error to say so.
+    static func isFineGrained(_ token: String) -> Bool {
+        token.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("github_pat_")
+    }
+
+    static let fineGrainedWarning =
+        "Fine-grained tokens only reach one account's repositories, so counts can come up short without any error. "
+        + "A classic token with the `repo` scope reaches them all."
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -66,7 +84,7 @@ struct SettingsView: View {
             Text(
                 hasSavedToken
                     ? "Using the token saved in your keychain."
-                    : "Using your gh login. To use a different account, save a token with the `repo` scope."
+                    : "Using your gh login. To use a different account, save a classic token with the `repo` scope."
             )
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -84,6 +102,11 @@ struct SettingsView: View {
             if tokenFailed {
                 Text("Couldn't save the token to your keychain.").font(.caption).foregroundStyle(.orange)
             }
+            if savedTokenIsFineGrained || Self.isFineGrained(tokenDraft) {
+                Text(LocalizedStringKey(Self.fineGrainedWarning))
+                    .font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -99,6 +122,7 @@ struct SettingsView: View {
         let token = tokenDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         tokenFailed = !KeychainToken.standard.save(token)
         guard !tokenFailed else { return }
+        savedTokenIsFineGrained = Self.isFineGrained(token)
         tokenDraft = ""
         hasSavedToken = true
         Task { await store.refresh() }
@@ -107,6 +131,7 @@ struct SettingsView: View {
     private func clearToken() {
         KeychainToken.standard.delete()
         hasSavedToken = false
+        savedTokenIsFineGrained = false
         Task { await store.refresh() }
     }
 

@@ -71,19 +71,33 @@ public final class TallyStore {
         return Pace(goal: goal, count: snapshot.count(for: metric), window: snapshot.window, at: now)
     }
 
+    /// The popover header: the month of the current numbers, named in the zone they were counted in, or
+    /// this month on the user's calendar while they're missing.
+    public func monthTitle(at now: Date = Date(), calendar: Calendar = .current) -> String {
+        let window = currentSnapshot(at: now, calendar: calendar)?.window
+        return Self.monthName(of: window?.start ?? now, in: window?.calendar ?? calendar, year: true)
+    }
+
     /// Where an ended month last stood, for when this month's numbers haven't arrived yet.
-    public func lastMonthSummary(at now: Date = Date()) -> String? {
-        guard currentSnapshot(at: now) == nil, let snapshot else { return nil }
-        let month = snapshot.window.start.formatted(.dateTime.month(.wide))
+    public func lastMonthSummary(at now: Date = Date(), calendar: Calendar = .current) -> String? {
+        guard currentSnapshot(at: now, calendar: calendar) == nil, let snapshot else { return nil }
+        let month = Self.monthName(of: snapshot.window.start, in: snapshot.window.calendar, year: false)
         let asOf = snapshot.fetchedAt.formatted(.dateTime.month(.abbreviated).day())
         return "Last count for \(month): \(snapshot.count(for: metric).formatted()) \(metric.noun), as of \(asOf)."
+    }
+
+    /// A month named on `calendar`, which a bare `formatted` would instead read in the system's zone.
+    private static func monthName(of date: Date, in calendar: Calendar, year: Bool) -> String {
+        let style = Date.FormatStyle(calendar: calendar, timeZone: calendar.timeZone)
+        return date.formatted(year ? style.month(.wide).year() : style.month(.wide))
     }
 
     /// When the numbers were fetched. Restored numbers can be days old, so the date appears once it isn't today.
     public func updatedText(at now: Date = Date()) -> String? {
         _ = dayChanges
         guard let snapshot else { return nil }
-        let fetchedToday = snapshot.window.calendar.isDate(snapshot.fetchedAt, inSameDayAs: now)
+        // Both the day and the clock time are the user's own, wherever the numbers were counted.
+        let fetchedToday = Calendar.current.isDate(snapshot.fetchedAt, inSameDayAs: now)
         let time = fetchedToday
             ? snapshot.fetchedAt.formatted(date: .omitted, time: .shortened)
             : snapshot.fetchedAt.formatted(.dateTime.month(.abbreviated).day().hour().minute())
@@ -129,6 +143,8 @@ public final class TallyStore {
 
     /// Today's numbers and possibly the month just changed, whether or not GitHub can be reached.
     func calendarDayChanged() async {
+        // Foundation caches the system zone, which `Calendar.current` and the formatters would otherwise keep reading.
+        NSTimeZone.resetSystemTimeZone()
         dayChanges += 1
         await refresh()
     }

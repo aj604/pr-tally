@@ -435,6 +435,83 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
         #expect(store.currentSnapshot(at: date(11, 2, 12, in: tokyo), calendar: tokyo)?.opened.count == 5)
     }
 
+    // MARK: Month labels across a zone change
+
+    /// Names the month the way the popover does: the header, then the waiting caption under it.
+    private func labels(
+        _ store: TallyStore, at now: Date, in calendar: Calendar
+    ) -> (header: String, caption: String?) {
+        (store.monthTitle(at: now, calendar: calendar), store.lastMonthSummary(at: now, calendar: calendar))
+    }
+
+    @Test(arguments: ["America/New_York", "America/Los_Angeles"])
+    func numbersCountedInTokyoKeepTheirMonthInTheHeaderAfterMovingWest(zone: String) async {
+        let tokyo = calendar(in: "Asia/Tokyo")
+        let west = calendar(in: zone)
+        let store = TallyStore(defaults: freshDefaults()) {
+            snapshot(opened: 40, at: date(11, 3, 12, in: tokyo), in: tokyo)
+        }
+        await store.refresh()
+        let relaunch = labels(store, at: date(11, 5, 12, in: west), in: west)
+        #expect(store.currentSnapshot(at: date(11, 5, 12, in: west), calendar: west)?.opened.count == 40)
+        #expect(relaunch.header == "November 2026")
+        #expect(relaunch.caption == nil)
+        // Same fetch, zone moved the same day: Tokyo's Nov 3 noon is still Nov 2 evening here.
+        #expect(labels(store, at: date(11, 3, 12, in: tokyo), in: west).header == "November 2026")
+    }
+
+    @Test func waitingNamesTheUsersMonthAndTheCaptionNamesTheWindowsOwn() async {
+        let tokyo = calendar(in: "Asia/Tokyo")
+        let newYork = calendar(in: "America/New_York")
+        let fetched = date(11, 1, 1, in: tokyo)
+        let store = TallyStore(defaults: freshDefaults()) { snapshot(opened: 3, at: fetched, in: tokyo) }
+        await store.refresh()
+        // Oct 31 at noon in New York: the numbers are November's, but it isn't November here yet.
+        let now = date(10, 31, 12, in: newYork)
+        #expect(store.currentSnapshot(at: now, calendar: newYork) == nil)
+        let waiting = labels(store, at: now, in: newYork)
+        #expect(waiting.header == "October 2026")
+        #expect(waiting.caption == "Last count for November: 3 PRs opened, as of Oct 31.")
+    }
+
+    @Test func tokyoDecemberStaysDecemberInTheCaptionWhenReadInLosAngeles() async {
+        let tokyo = calendar(in: "Asia/Tokyo")
+        let losAngeles = calendar(in: "America/Los_Angeles")
+        let fetched = date(12, 31, 20, in: tokyo)
+        let store = TallyStore(defaults: freshDefaults()) { snapshot(opened: 9, at: fetched, in: tokyo) }
+        await store.refresh()
+        let now = date(12, 31, 12, in: losAngeles)
+        #expect(store.currentSnapshot(at: now, calendar: losAngeles) == nil)
+        let waiting = labels(store, at: now, in: losAngeles)
+        #expect(waiting.header == "December 2026")
+        #expect(waiting.caption == "Last count for December: 9 PRs opened, as of Dec 31.")
+    }
+
+    @Test func sameZoneLabelsAreUnchanged() async {
+        let newYork = calendar(in: "America/New_York")
+        let store = TallyStore(defaults: freshDefaults()) {
+            snapshot(opened: 2, at: date(11, 3, 12, in: newYork), in: newYork)
+        }
+        await store.refresh()
+        let current = labels(store, at: date(11, 5, 12, in: newYork), in: newYork)
+        #expect(current.header == "November 2026")
+        #expect(current.caption == nil)
+        let ended = labels(store, at: date(12, 1, 12, in: newYork), in: newYork)
+        #expect(ended.header == "December 2026")
+        #expect(ended.caption == "Last count for November: 2 PRs opened, as of Nov 3.")
+    }
+
+    @Test func updatedTextTellsTodayByTheClockItPrintsNotTheWindowsZone() async {
+        let tokyo = calendar(in: "Asia/Tokyo")
+        let local = Calendar.current
+        // 23:30 and 00:30 on this machine's wall: two days here, though only an hour apart.
+        let fetched = local.date(from: DateComponents(year: 2026, month: 11, day: 2, hour: 23, minute: 30))!
+        let now = local.date(from: DateComponents(year: 2026, month: 11, day: 3, hour: 0, minute: 30))!
+        let store = TallyStore(defaults: freshDefaults()) { snapshot(opened: 1, at: fetched, in: tokyo) }
+        await store.refresh()
+        #expect(store.updatedText(at: now)?.hasPrefix("Updated Nov 2") == true)
+    }
+
     @Test func timeZoneChangeRedrawsAndRefreshes() async throws {
         let script = Script([.success(snapshot(opened: 1))])
         let store = TallyStore(defaults: freshDefaults()) { try await script.next() }

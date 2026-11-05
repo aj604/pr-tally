@@ -54,9 +54,7 @@ public struct PopoverView: View {
         }
     }
 
-    private var monthTitle: String {
-        (store.currentSnapshot()?.window.start ?? Date()).formatted(.dateTime.month(.wide).year())
-    }
+    private var monthTitle: String { store.monthTitle() }
 
     private func progress(_ pace: Pace, today: Int) -> some View {
         VStack(alignment: .leading, spacing: 8) {

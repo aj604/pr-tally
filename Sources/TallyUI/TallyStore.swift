@@ -158,12 +158,12 @@ public final class TallyStore {
 
     /// Tells the user once per month when the goal is reached, rather than on every refresh that finds it reached.
     private func announceGoal(from previous: MonthSnapshot?, to fetched: MonthSnapshot) {
-        guard notifiesOnGoal, let notify,
-            let milestone = Milestone.goalReached(from: previous, to: fetched, metric: metric, goal: goal, at: Date()),
+        guard let milestone = Milestone.goalReached(from: previous, to: fetched, metric: metric, goal: goal, at: Date()),
             defaults.string(forKey: Keys.goalAnnounced) != fetched.window.monthKey
         else { return }
+        // Recorded even with notifications off, so turning them on later doesn't announce a crossing from days ago.
         defaults.set(fetched.window.monthKey, forKey: Keys.goalAnnounced)
-        notify(milestone)
+        if notifiesOnGoal { notify?(milestone) }
     }
 
     /// Today's numbers and possibly the month just changed, whether or not GitHub can be reached.

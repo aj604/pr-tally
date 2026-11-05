@@ -664,6 +664,69 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
         #expect(sent.milestones.isEmpty)
         #expect(!TallyStore(defaults: defaults) { snapshot(opened: 0) }.notifiesOnGoal)
     }
+
+    @Test func anotherAccountsNumbersAreNotACrossing() async {
+        let other = snapshot(opened: 1000)
+        let account = MonthSnapshot(
+            login: "someone-else", window: other.window, opened: other.opened, merged: [], totalContributions: 0,
+            fetchedAt: other.fetchedAt
+        )
+        let sent = Sent()
+        let script = Script([.success(snapshot(opened: 10)), .success(account), .success(snapshot(opened: 1000))])
+        let store = TallyStore(defaults: freshDefaults(), notify: { sent.milestones.append($0) }) {
+            try await script.next()
+        }
+        await store.refresh()
+        await store.refresh()
+        #expect(sent.milestones.isEmpty)
+        // Back on the first account, the goal is still not reached "just now" relative to the other one.
+        await store.refresh()
+        #expect(sent.milestones.isEmpty)
+    }
+
+    @Test func aCrossingWithNotificationsOffIsNotAnnouncedLateWhenTheyComeBackOn() async {
+        let sent = Sent()
+        let script = Script([
+            .success(snapshot(opened: 999)), .success(snapshot(opened: 1000)), .success(snapshot(opened: 998)),
+            .success(snapshot(opened: 1001)),
+        ])
+        let store = TallyStore(defaults: freshDefaults(), notify: { sent.milestones.append($0) }) {
+            try await script.next()
+        }
+        await store.refresh()
+        store.notifiesOnGoal = false
+        await store.refresh()  // Crosses while off.
+        store.notifiesOnGoal = true
+        await store.refresh()
+        await store.refresh()  // Dips and returns.
+        #expect(sent.milestones.isEmpty)
+    }
+
+    @Test func goalReachedBodyReadsRightForOnePRAndForMerged() {
+        let day = november(16)
+        let none = monthSnapshot(openedByDay: [], at: day)
+        let one = monthSnapshot(openedByDay: [(day, 1)], at: day)
+        #expect(
+            Milestone.goalReached(from: none, to: one, metric: .opened, goal: 1, at: day)?.body
+                == "1 PR opened in November, with 14 days to spare."
+        )
+        let pr = PullRequest(
+            id: "m", title: "", url: URL(string: "https://github.com")!, createdAt: day, mergedAt: day,
+            repository: .init(nameWithOwner: "me/app")
+        )
+        let merged = MonthSnapshot(
+            login: "me", window: MonthWindow(containing: day), opened: [], merged: [pr, pr], totalContributions: 0,
+            fetchedAt: day
+        )
+        let noneMerged = MonthSnapshot(
+            login: "me", window: MonthWindow(containing: day), opened: [], merged: [pr], totalContributions: 0,
+            fetchedAt: day
+        )
+        #expect(
+            Milestone.goalReached(from: noneMerged, to: merged, metric: .merged, goal: 2, at: day)?.body
+                == "2 PRs merged in November, with 14 days to spare."
+        )
+    }
 }
 
 private final class Redraw: @unchecked Sendable {

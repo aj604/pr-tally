@@ -19,6 +19,7 @@ struct MonthCharts: View {
     private var dayCount: Int { snapshot.window.dayCount }
     private var daily: [Int] { snapshot.dailyCounts(for: metric) }
     private var cumulative: [Int] { snapshot.cumulativeCounts(for: metric, through: now) }
+    private var projection: MonthProjection? { snapshot.projection(for: metric, at: now) }
     private var xDomain: ClosedRange<Double> { 0.5...(Double(dayCount) + 0.5) }
 
     var body: some View {
@@ -29,6 +30,10 @@ struct MonthCharts: View {
                     Spacer()
                     LegendKey(label: "You", color: .accentColor, dashed: false)
                     LegendKey(label: "Steady pace", color: Self.neutral, dashed: true)
+                }
+                if let projection {
+                    Text("Likely finish: \(projection.low.formatted())–\(projection.high.formatted())")
+                        .font(.caption).foregroundStyle(.secondary).monospacedDigit()
                 }
                 runningTotal.frame(height: 96)
             }
@@ -69,6 +74,7 @@ struct MonthCharts: View {
                     .foregroundStyle(Color.accentColor)
                     .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
             }
+            projectionRange
             if let last = cumulative.last {
                 PointMark(x: .value("Day", Double(cumulative.count)), y: .value("Total", last))
                     .foregroundStyle(Color.accentColor)
@@ -77,7 +83,7 @@ struct MonthCharts: View {
             hoverRule
         }
         .chartXScale(domain: xDomain)
-        .chartYScale(domain: 0...max(goal, cumulative.last ?? 0, 1))
+        .chartYScale(domain: 0...max(goal, cumulative.last ?? 0, projection?.high ?? 0, 1))
         .chartXAxis(.hidden)
         .chartYAxis {
             AxisMarks(values: [0, goal / 2, goal]) { value in
@@ -86,7 +92,35 @@ struct MonthCharts: View {
             }
         }
         .hoverSelection($hoveredDay, dayCount: dayCount)
-        .accessibilityLabel("Running total of \(cumulative.last ?? 0) against a steady pace to \(goal)")
+        .accessibilityLabel(
+            "Running total of \(cumulative.last ?? 0) against a steady pace to \(goal)"
+                + (projection.map { ". Likely finish \($0.low) to \($0.high)" } ?? "")
+        )
+    }
+
+    /// A cone from today's total to the likely month-end range, around the line the current rate follows.
+    @ChartContentBuilder private var projectionRange: some ChartContent {
+        if let projection, let last = cumulative.last {
+            let steps = 12
+            let startX = Double(cumulative.count)
+            let endX = Double(dayCount) + 0.5
+            ForEach(0...steps, id: \.self) { step in
+                let progress = Double(step) / Double(steps)
+                let band = projection.band(at: progress)
+                AreaMark(
+                    x: .value("Day", startX + (endX - startX) * progress),
+                    yStart: .value("Low", band.lowerBound), yEnd: .value("High", band.upperBound),
+                    series: .value("Series", "Range")
+                )
+                .foregroundStyle(Color.accentColor.opacity(0.15))
+            }
+            LineMark(x: .value("Day", startX), y: .value("Projected", last), series: .value("Series", "Projected"))
+                .foregroundStyle(Color.accentColor.opacity(0.6))
+                .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [3, 3]))
+            LineMark(x: .value("Day", endX), y: .value("Projected", projection.expected), series: .value("Series", "Projected"))
+                .foregroundStyle(Color.accentColor.opacity(0.6))
+                .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [3, 3]))
+        }
     }
 
     private var dailyBars: some View {

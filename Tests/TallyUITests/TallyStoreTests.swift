@@ -73,11 +73,23 @@ private actor Script {
     }
 }
 
+/// Settings kept in memory. A real `UserDefaults` suite writes ~/Library/Preferences/<suite>.plist as soon
+/// as a value is set, and removing the domain afterwards only empties that file.
+private final class InMemoryDefaults: UserDefaults, @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String: Any] = [:]
+
+    init() { super.init(suiteName: nil)! }
+
+    override func object(forKey key: String) -> Any? { lock.withLock { values[key] } }
+    override func set(_ value: Any?, forKey key: String) { lock.withLock { values[key] = value } }
+    override func set(_ value: Int, forKey key: String) { set(value as Any?, forKey: key) }
+    override func integer(forKey key: String) -> Int { object(forKey: key) as? Int ?? 0 }
+    override func string(forKey key: String) -> String? { object(forKey: key) as? String }
+}
+
 private func freshDefaults() -> UserDefaults {
-    let name = "PRTallyTests.\(UUID().uuidString)"
-    let defaults = UserDefaults(suiteName: name)!
-    defaults.removePersistentDomain(forName: name)
-    return defaults
+    InMemoryDefaults()
 }
 
 private func freshCache() -> (cache: SnapshotCache, url: URL) {

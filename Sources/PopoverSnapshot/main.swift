@@ -3,7 +3,7 @@ import SwiftUI
 import TallyCore
 import TallyUI
 
-// Usage: swift run PopoverSnapshot <output.png> [light|dark|menubar|rollover|drilldown|overview]
+// Usage: swift run PopoverSnapshot <output.png> [light|dark|menubar|rollover|drilldown|overview|milestone]
 @MainActor
 func write(_ view: some View, to path: String) throws {
     let renderer = ImageRenderer(content: view)
@@ -139,10 +139,58 @@ func renderFixture(to path: String, listOpen: Bool) async throws {
     try writeHosted(view, to: path)
 }
 
+/// Settings held in memory, so a run never touches the user's real ones.
+private final class ScratchDefaults: UserDefaults, @unchecked Sendable {
+    private var values: [String: Any] = [:]
+    init() { super.init(suiteName: nil)! }
+    override func object(forKey key: String) -> Any? { values[key] }
+    override func set(_ value: Any?, forKey key: String) { values[key] = value }
+    override func set(_ value: Int, forKey key: String) { values[key] = value }
+    override func set(_ value: Bool, forKey key: String) { values[key] = value }
+    override func integer(forKey key: String) -> Int { values[key] as? Int ?? 0 }
+    override func string(forKey key: String) -> String? { values[key] as? String }
+}
+
+/// Counts creeping up to a goal of 100 over several refreshes, and what the store would send, using no network.
+@MainActor
+func runMilestone() async {
+    let now = Date()
+    @Sendable func snapshot(_ count: Int) -> MonthSnapshot {
+        let prs = (0..<count).map {
+            PullRequest(
+                id: "\($0)", title: "", url: URL(string: "https://github.com")!, createdAt: now, mergedAt: nil,
+                repository: .init(nameWithOwner: "me/app")
+            )
+        }
+        return MonthSnapshot(
+            login: "me", window: MonthWindow(containing: now), opened: prs, merged: [], totalContributions: 0,
+            fetchedAt: now
+        )
+    }
+    let counts = Counter([97, 99, 100, 104, 100])
+    let defaults = ScratchDefaults()
+    let store = TallyStore(defaults: defaults, notify: { print("  NOTIFY: \($0.title) | \($0.body)") }) {
+        snapshot(await counts.next())
+    }
+    store.goal = 100
+    for _ in 0..<5 {
+        await store.refresh()
+        print("count \(store.count ?? -1)")
+    }
+}
+
+private actor Counter {
+    private var values: [Int]
+    init(_ values: [Int]) { self.values = values }
+    func next() -> Int { values.removeFirst() }
+}
+
 let arguments = CommandLine.arguments
 let path = arguments.count > 1 ? arguments[1] : "popover.png"
 let mode = arguments.count > 2 ? arguments[2] : "light"
-if mode == "menubar" {
+if mode == "milestone" {
+    await runMilestone()
+} else if mode == "menubar" {
     try renderMenuBar(to: path)
 } else if mode == "rollover" {
     try await renderRollover(to: path)

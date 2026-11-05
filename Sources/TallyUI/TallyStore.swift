@@ -8,6 +8,7 @@ import TallyCore
 public final class TallyStore {
     public typealias Fetch = @Sendable () async throws -> MonthSnapshot
 
+    /// The last good numbers, which can be from a month that has since ended. See `currentSnapshot(at:)`.
     public private(set) var snapshot: MonthSnapshot?
     public private(set) var errorMessage: String?
     public private(set) var isRefreshing = false
@@ -20,6 +21,10 @@ public final class TallyStore {
     public var metric: PRMetric {
         didSet { defaults.set(metric.rawValue, forKey: Keys.metric) }
     }
+    /// Whether reaching the goal sends a notification. On by default; the system asks permission the first time.
+    public var notifiesOnGoal: Bool {
+        didSet { defaults.set(notifiesOnGoal, forKey: Keys.notifiesOnGoal) }
+    }
     public var refreshMinutes: Int {
         didSet {
             defaults.set(refreshMinutes, forKey: Keys.refreshMinutes)
@@ -27,42 +32,105 @@ public final class TallyStore {
         }
     }
 
+    /// What the popover shows. Kept here rather than in the view because `MenuBarExtra` keeps the view's own
+    /// state alive while the popover is closed; see `popoverClosed()`.
+    public enum Screen: Sendable { case summary, pullRequests, settings }
+
+    public var screen = Screen.summary
+
     private enum Keys {
         static let goal = "goal"
         static let metric = "metric"
         static let refreshMinutes = "refreshMinutes"
+        static let notifiesOnGoal = "notifiesOnGoal"
+        /// The month key of the month whose goal has already been announced.
+        static let goalAnnounced = "goalAnnounced"
     }
 
     private let fetch: Fetch
     private let defaults: UserDefaults
+    private let cache: SnapshotCache?
+    private let notify: (@MainActor (Milestone) -> Void)?
     private var schedule: Task<Void, Never>?
-    private var watchingWakes = false
+    private var watchingSystem = false
+    /// Read by everything that depends on today's date, so it redraws at midnight even if the refresh then fails.
+    private var dayChanges = 0
 
-    public init(defaults: UserDefaults = .standard, fetch: @escaping Fetch) {
+    public init(
+        defaults: UserDefaults = .standard, cache: SnapshotCache? = nil,
+        notify: (@MainActor (Milestone) -> Void)? = nil, fetch: @escaping Fetch
+    ) {
         self.fetch = fetch
         self.defaults = defaults
+        self.cache = cache
+        self.notify = notify
+        snapshot = cache?.load()
         let savedGoal = defaults.integer(forKey: Keys.goal)
         goal = savedGoal > 0 ? savedGoal : 1000
         metric = defaults.string(forKey: Keys.metric).flatMap(PRMetric.init(rawValue:)) ?? .opened
+        notifiesOnGoal = defaults.object(forKey: Keys.notifiesOnGoal) as? Bool ?? true
         let savedMinutes = defaults.integer(forKey: Keys.refreshMinutes)
         refreshMinutes = savedMinutes > 0 ? savedMinutes : 15
     }
 
-    public var count: Int? { snapshot?.count(for: metric) }
+    public var count: Int? { currentSnapshot()?.count(for: metric) }
+
+    /// The last good numbers, as long as they're for the month containing `now`. That is the month on the
+    /// user's calendar as well as the window's own instants, which stop agreeing when the time zone changes.
+    public func currentSnapshot(at now: Date = Date(), calendar: Calendar = .current) -> MonthSnapshot? {
+        _ = dayChanges
+        guard let snapshot, snapshot.window.contains(now) else { return nil }
+        let windowMonth = snapshot.window.calendar.dateComponents([.year, .month], from: snapshot.window.start)
+        let localMonth = calendar.dateComponents([.year, .month], from: now)
+        return windowMonth.year == localMonth.year && windowMonth.month == localMonth.month ? snapshot : nil
+    }
 
     public func pace(at now: Date = Date()) -> Pace? {
-        guard let snapshot, let count else { return nil }
-        return Pace(goal: goal, count: count, window: snapshot.window, at: now)
+        guard let snapshot = currentSnapshot(at: now) else { return nil }
+        return Pace(goal: goal, count: snapshot.count(for: metric), window: snapshot.window, at: now)
+    }
+
+    /// The popover header: the month of the current numbers, named in the zone they were counted in, or
+    /// this month on the user's calendar while they're missing.
+    public func monthTitle(at now: Date = Date(), calendar: Calendar = .current) -> String {
+        let window = currentSnapshot(at: now, calendar: calendar)?.window
+        return Self.monthName(of: window?.start ?? now, in: window?.calendar ?? calendar, year: true)
+    }
+
+    /// Where an ended month last stood, for when this month's numbers haven't arrived yet.
+    public func lastMonthSummary(at now: Date = Date(), calendar: Calendar = .current) -> String? {
+        guard currentSnapshot(at: now, calendar: calendar) == nil, let snapshot else { return nil }
+        let month = Self.monthName(of: snapshot.window.start, in: snapshot.window.calendar, year: false)
+        let asOf = snapshot.fetchedAt.formatted(.dateTime.month(.abbreviated).day())
+        return "Last count for \(month): \(snapshot.count(for: metric).formatted()) \(metric.noun), as of \(asOf)."
+    }
+
+    /// A month named on `calendar`, which a bare `formatted` would instead read in the system's zone.
+    private static func monthName(of date: Date, in calendar: Calendar, year: Bool) -> String {
+        let style = Date.FormatStyle(calendar: calendar, timeZone: calendar.timeZone)
+        return date.formatted(year ? style.month(.wide).year() : style.month(.wide))
+    }
+
+    /// When the numbers were fetched. Restored numbers can be days old, so the date appears once it isn't today.
+    public func updatedText(at now: Date = Date()) -> String? {
+        _ = dayChanges
+        guard let snapshot else { return nil }
+        // Both the day and the clock time are the user's own, wherever the numbers were counted.
+        let fetchedToday = Calendar.current.isDate(snapshot.fetchedAt, inSameDayAs: now)
+        let time = fetchedToday
+            ? snapshot.fetchedAt.formatted(date: .omitted, time: .shortened)
+            : snapshot.fetchedAt.formatted(.dateTime.month(.abbreviated).day().hour().minute())
+        return "Updated \(time)"
     }
 
     /// Today's count, shown beside the menu bar ring.
     public func menuBarTitle(at now: Date = Date()) -> String {
-        snapshot.map { $0.todayCount(for: metric, at: now).formatted() } ?? "–"
+        currentSnapshot(at: now).map { $0.todayCount(for: metric, at: now).formatted() } ?? "–"
     }
 
     /// Whether today's count has passed the daily quota, which turns the menu bar number green.
     public func menuBarBeatsPace(at now: Date = Date()) -> Bool {
-        guard let snapshot, let pace = pace(at: now) else { return false }
+        guard let snapshot = currentSnapshot(at: now), let pace = pace(at: now) else { return false }
         return pace.beatsDailyQuota(today: snapshot.todayCount(for: metric, at: now))
     }
 
@@ -78,13 +146,44 @@ public final class TallyStore {
     public func refresh() async {
         guard !isRefreshing else { return }
         isRefreshing = true
-        defer { isRefreshing = false }
+        let dayChangesAtStart = dayChanges
         do {
-            snapshot = try await fetch()
+            let fetched = try await fetch()
+            let previous = snapshot
+            snapshot = fetched
             errorMessage = nil
+            cache?.save(fetched)
+            announceGoal(from: previous, to: fetched)
         } catch {
             errorMessage = error.localizedDescription
         }
+        isRefreshing = false
+        // A fetch that spanned midnight may have come back with the month that just ended.
+        if dayChanges != dayChangesAtStart { await refresh() }
+    }
+
+    /// Tells the user once per month when the goal is reached, rather than on every refresh that finds it reached.
+    private func announceGoal(from previous: MonthSnapshot?, to fetched: MonthSnapshot) {
+        guard let milestone = Milestone.goalReached(from: previous, to: fetched, metric: metric, goal: goal, at: Date()),
+            defaults.string(forKey: Keys.goalAnnounced) != fetched.window.monthKey
+        else { return }
+        // Recorded even with notifications off, so turning them on later doesn't announce a crossing from days ago.
+        defaults.set(fetched.window.monthKey, forKey: Keys.goalAnnounced)
+        if notifiesOnGoal { notify?(milestone) }
+    }
+
+    /// Today's numbers and possibly the month just changed, whether or not GitHub can be reached.
+    func calendarDayChanged() async {
+        // Foundation caches the system zone, which `Calendar.current` and the formatters would otherwise keep reading.
+        NSTimeZone.resetSystemTimeZone()
+        dayChanges += 1
+        await refresh()
+    }
+
+    /// The next opening starts at the numbers, not wherever the last one ended: Settings or the PR list
+    /// would otherwise be what you see the next time you glance at the menu bar.
+    public func popoverClosed() {
+        screen = .summary
     }
 
     /// Refreshes when opened, unless the numbers are under a minute old.
@@ -93,16 +192,30 @@ public final class TallyStore {
         await refresh()
     }
 
-    /// Begins refreshing on a schedule and after the Mac wakes. Safe to call more than once.
+    /// Begins refreshing on a schedule, after the Mac wakes, and when the day or time zone changes. Safe to call more than once.
     public func start() {
         if schedule == nil { startSchedule() }
-        guard !watchingWakes else { return }
-        watchingWakes = true
+        guard !watchingSystem else { return }
+        watchingSystem = true
         Task { [weak self] in
             let wakes = NSWorkspace.shared.notificationCenter.notifications(named: NSWorkspace.didWakeNotification)
             for await _ in wakes.map({ _ in () }) {
                 try? await Task.sleep(for: .seconds(5))
                 await self?.refresh()
+            }
+        }
+        Task { [weak self] in
+            // Posted at midnight, or on wake if the Mac slept through it.
+            let days = NotificationCenter.default.notifications(named: .NSCalendarDayChanged)
+            for await _ in days.map({ _ in () }) {
+                await self?.calendarDayChanged()
+            }
+        }
+        Task { [weak self] in
+            // A new zone can put today in a different month, with no midnight to say so.
+            let zones = NotificationCenter.default.notifications(named: .NSSystemTimeZoneDidChange)
+            for await _ in zones.map({ _ in () }) {
+                await self?.calendarDayChanged()
             }
         }
     }

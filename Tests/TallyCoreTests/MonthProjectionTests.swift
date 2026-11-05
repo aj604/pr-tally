@@ -32,6 +32,21 @@ private func projection(_ daily: [Int], at now: Date) -> MonthProjection? {
         #expect(steady.expected < steady.high)
         let quiet = projection([0, 0, 0, 1], at: date(11, 4, hour: 12))!
         #expect(quiet.low < quiet.high)
+        let none = projection([0, 0, 0, 0], at: date(11, 4, hour: 12))!
+        #expect(none.low == 0)
+        #expect(none.high > 0)
+        #expect(none.high < 10)
+    }
+
+    @Test func fewerCompletedDaysUseAWiderTQuantile() {
+        // Half-width is t * deviation * sqrt(left * (1 + left / elapsed)), with completed - 1 degrees of freedom.
+        func half(_ result: MonthProjection, t: Double) -> Double {
+            t * result.dailyDeviation * (result.daysLeft * (1 + result.daysLeft / result.daysElapsed)).squareRoot()
+        }
+        let three = projection([10, 30, 50, 0], at: date(11, 4, hour: 1))!
+        #expect(abs(three.band(at: 1).upperBound - Double(three.expected) - half(three, t: 1.886)) < 1e-9)
+        let four = projection([10, 30, 50, 30, 0], at: date(11, 5, hour: 1))!
+        #expect(abs(four.band(at: 1).upperBound - Double(four.expected) - half(four, t: 1.638)) < 1e-9)
     }
 
     @Test func variableDaysGiveARangeAroundTheExpectedFinish() {
@@ -66,6 +81,37 @@ private func projection(_ daily: [Int], at now: Date) -> MonthProjection? {
         let busy = projection([10, 30, 50, 100], at: date(11, 4, hour: 1))!
         #expect(quiet.dailyDeviation == 20)
         #expect(busy.dailyDeviation == 20)
+    }
+
+    @Test func aRangeAboveTheCeilingStaysInsideThePlot() {
+        // Steady 17 a day against a goal of 300 projects past 1.5 times the goal.
+        let result = projection([17, 17, 17, 17, 17, 17, 17, 17, 17, 8], at: date(11, 10, hour: 12))!
+        #expect(result.ceiling(goal: 300) == 450)
+        #expect(result.low > 450)
+        for step in 0...12 {
+            let band = result.band(at: Double(step) / 12, within: 450)
+            #expect(band.lowerBound <= band.upperBound)
+            #expect(band.upperBound <= 450)
+        }
+    }
+
+    @Test func aCountPastTheGoalSetsTheCeiling() {
+        let result = projection([50, 50, 50, 50], at: date(11, 4, hour: 12))!
+        #expect(result.count == 200)
+        #expect(result.ceiling(goal: 100) == 200)
+        for step in 0...12 {
+            let band = result.band(at: Double(step) / 12, within: 200)
+            #expect(band.lowerBound <= band.upperBound)
+            #expect(band.upperBound <= 200)
+        }
+    }
+
+    @Test func aRangeWithinTheCeilingIsDrawnAsIs() {
+        let result = projection([30, 5, 16, 45], at: date(11, 4, hour: 20))!
+        let ceiling = result.ceiling(goal: 1000)
+        #expect(ceiling >= 1000)
+        #expect(result.band(at: 0.5, within: ceiling) == result.band(at: 0.5))
+        #expect(result.band(at: 1, within: ceiling) == result.band(at: 1))
     }
 
     @Test func noRangeOnceTheMonthIsOver() {

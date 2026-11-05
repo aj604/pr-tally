@@ -22,7 +22,7 @@ struct MonthCharts: View {
     private var projection: MonthProjection? { snapshot.projection(for: metric, at: now) }
     /// The plot makes room for a projection past the goal, but not so much that a lumpy early month flattens the line.
     private var yMax: Int {
-        max(goal, cumulative.last ?? 0, min(projection?.high ?? 0, goal * 3 / 2), 1)
+        max(projection?.ceiling(goal: goal) ?? goal, cumulative.last ?? 0, 1)
     }
     private var xDomain: ClosedRange<Double> { 0.5...(Double(dayCount) + 0.5) }
 
@@ -110,10 +110,10 @@ struct MonthCharts: View {
             let endX = Double(dayCount) + 0.5
             ForEach(0...steps, id: \.self) { step in
                 let progress = Double(step) / Double(steps)
-                let band = projection.band(at: progress)
+                let band = projection.band(at: progress, within: yMax)
                 AreaMark(
                     x: .value("Day", startX + (endX - startX) * progress),
-                    yStart: .value("Low", band.lowerBound), yEnd: .value("High", min(band.upperBound, Double(yMax))),
+                    yStart: .value("Low", band.lowerBound), yEnd: .value("High", band.upperBound),
                     series: .value("Series", "Range")
                 )
                 .foregroundStyle(Color.accentColor.opacity(0.15))

@@ -6,7 +6,9 @@ import Foundation
 /// independent draws, so it doesn't know about weekends or a streak. In simulated months the real finish landed
 /// inside it about 80% of the time for steady days from day 3 to day 20. For lumpy days (a few big ones among quiet
 /// ones, or mostly empty ones) that is only about half the time at day 3, 60% at day 5 and 75% to 80% from day 10.
-/// It is wider than needed when weekends are quiet, and in the last days of the month.
+/// With quiet weekends it depends on the weekday the month starts: a month starting on a Monday or Tuesday lands
+/// inside only about 45% of the time in the first week (too narrow), and one starting on a Thursday 64% around day 25,
+/// while most other starts are well over 90% (too wide). It is also wider than needed in the last days of the month.
 public struct MonthProjection: Sendable, Equatable {
     /// Completed days needed before a spread means anything.
     public static let minimumCompletedDays = 3
@@ -20,9 +22,9 @@ public struct MonthProjection: Sendable, Equatable {
     public let count: Int
     /// Month-end count if the rate so far continues. Always equals `Pace.projected`.
     public let expected: Int
-    /// Day-to-day spread assumed for a day's count: that of the completed days, but no less than half that of a
+    /// Day-to-day spread assumed for a day's count: that of the completed days, but no less than a tenth of that of a
     /// Poisson count at the rate so far, so a run of identical days (or a lone PR) doesn't read as certainty.
-    /// Half, because the full Poisson spread makes the range too wide for steady days.
+    /// It only guards that degenerate case: a larger floor pushes steady days well over 80%.
     public let dailyDeviation: Double
     /// Time passed in the month in days, counting the part of today so far.
     public let daysElapsed: Double
@@ -42,9 +44,9 @@ public struct MonthProjection: Sendable, Equatable {
         self.count = count
         self.expected = Pace.projectedTotal(count: count, window: window, at: now)
         self.daysElapsed = Double(window.dayCount) * elapsed
-        self.dailyDeviation = max(variance.squareRoot(), 0.5 * (Double(max(count, 1)) / daysElapsed).squareRoot())
+        self.dailyDeviation = max(variance.squareRoot(), 0.1 * (Double(max(count, 1)) / daysElapsed).squareRoot())
         self.daysLeft = Double(window.dayCount) * (1 - elapsed)
-        self.multiplier = Self.tQuantiles[min(completed - 2, Self.tQuantiles.count - 1)]
+        self.multiplier = Self.tQuantiles[min(completed - 3, Self.tQuantiles.count - 1)]
     }
 
     /// The range of the total once `progress` of the time left has passed, from 0 (now) to 1 (month end).
@@ -56,6 +58,20 @@ public struct MonthProjection: Sendable, Equatable {
         let ahead = daysLeft * progress
         let half = multiplier * dailyDeviation * (ahead * (1 + ahead / daysElapsed)).squareRoot()
         return max(center - half, Double(count))...(center + half)
+    }
+
+    /// Highest total a plot needs room for: the goal, what is counted, and the range up to 1.5 times the goal.
+    /// A lumpy early month can project many times the goal, and making room for all of it would flatten the plot.
+    public func ceiling(goal: Int) -> Int {
+        max(goal, count, min(Int(band(at: 1).upperBound.rounded(.up)), goal * 3 / 2))
+    }
+
+    /// `band(at:)` held inside a plot that reaches `ceiling`. A range that starts above it becomes a flat line
+    /// along the top, not an inverted one.
+    public func band(at progress: Double, within ceiling: Int) -> ClosedRange<Double> {
+        let band = band(at: progress)
+        let top = Double(ceiling)
+        return min(band.lowerBound, top)...min(band.upperBound, top)
     }
 
     /// Lower end of the likely month-end count.

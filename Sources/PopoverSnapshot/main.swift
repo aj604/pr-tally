@@ -31,19 +31,24 @@ func renderPopover(to path: String, scheme: ColorScheme) async throws {
 func renderMenuBar(to path: String) throws {
     let window = MonthWindow(containing: Date())
     let middle = window.start.addingTimeInterval(window.end.timeIntervalSince(window.start) / 2)
-    let states: [(String, Pace?)] = [
-        ("–", nil),
-        ("83", Pace(goal: 1000, count: 83, window: window, at: window.start.addingTimeInterval(4 * 86_400))),
-        ("300", Pace(goal: 1000, count: 300, window: window, at: middle)),
-        ("700", Pace(goal: 1000, count: 700, window: window, at: middle)),
-        ("1,042", Pace(goal: 1000, count: 1042, window: window, at: middle)),
+    let states: [(String, Bool, Pace?)] = [
+        ("–", false, nil),
+        ("12", false, Pace(goal: 1000, count: 83, window: window, at: window.start.addingTimeInterval(4 * 86_400))),
+        ("41", true, Pace(goal: 1000, count: 300, window: window, at: middle)),
+        ("9", false, Pace(goal: 1000, count: 700, window: window, at: middle)),
+        ("35", true, Pace(goal: 1000, count: 1042, window: window, at: middle)),
     ]
     func bar(_ background: Color, _ text: Color) -> some View {
         HStack(spacing: 16) {
             ForEach(states.indices, id: \.self) { index in
+                let (title, beatingPace, pace) = states[index]
                 HStack(spacing: 4) {
-                    Image(nsImage: MenuBarGlyph.image(for: states[index].1))
-                    Text(states[index].0).monospacedDigit().foregroundStyle(text)
+                    if beatingPace {
+                        Image(nsImage: MenuBarGlyph.image(for: pace, greenTitle: title))
+                    } else {
+                        Image(nsImage: MenuBarGlyph.image(for: pace))
+                        Text(title).monospacedDigit().foregroundStyle(text)
+                    }
                 }
             }
         }

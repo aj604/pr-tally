@@ -82,6 +82,19 @@ private func date(_ month: Int, _ day: Int, hour: Int = 0) -> Date {
         #expect(pace.quotaSurplus(today: 50) == 0)
     }
 
+    @Test func beatingTheDailyQuotaMeansGoingPastItNotMeetingIt() {
+        let pace = Pace(goal: 900, count: 100, window: window, at: date(11, 16))
+        #expect(!pace.beatsDailyQuota(today: 29))
+        #expect(!pace.beatsDailyQuota(today: 30))
+        #expect(pace.beatsDailyQuota(today: 31))
+    }
+
+    @Test func aGoodDayStillBeatsTheQuotaAfterTheGoalIsHit() {
+        let pace = Pace(goal: 900, count: 950, window: window, at: date(11, 16))
+        #expect(pace.beatsDailyQuota(today: 31))
+        #expect(!pace.beatsDailyQuota(today: 0))
+    }
+
     @Test func goalHitWinsAndNothingRemains() {
         let pace = Pace(goal: 1000, count: 1200, window: window, at: date(11, 2))
         #expect(pace.status == .goalHit)

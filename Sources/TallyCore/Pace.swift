@@ -16,6 +16,8 @@ public struct Pace: Sendable, Equatable {
     public let daysRemaining: Int
     /// Count needed per day, including today, to reach the goal.
     public let neededPerDay: Double
+    /// Count a steady pace adds each day. Fixed for the month, unlike `neededPerDay`.
+    public let dailyQuota: Double
 
     public init(goal: Int, count: Int, window: MonthWindow, at now: Date) {
         let elapsed = window.elapsedFraction(at: now)
@@ -28,6 +30,13 @@ public struct Pace: Sendable, Equatable {
         self.remaining = max(goal - count, 0)
         self.daysRemaining = window.daysRemaining(at: now)
         self.neededPerDay = daysRemaining > 0 ? Double(remaining) / Double(daysRemaining) : 0
+        self.dailyQuota = Double(goal) / Double(window.dayCount)
+    }
+
+    /// Whole PRs past the daily quota today, or 0 if not past it. Once the goal is hit there's no quota left to beat.
+    public func quotaSurplus(today: Int) -> Int {
+        guard status != .goalHit else { return 0 }
+        return max(Int((Double(today) - dailyQuota).rounded(.up)), 0)
     }
 
     /// Positive when ahead of a steady pace, negative when behind.

@@ -134,7 +134,8 @@ func renderFixture(to path: String, listOpen: Bool) async throws {
     )
     let store = TallyStore(cache: nil) { snapshot }
     await store.refresh()
-    let view = PopoverView(store: store, showingPullRequests: listOpen)
+    if listOpen { store.screen = .pullRequests }
+    let view = PopoverView(store: store)
         .background(Color(nsColor: .windowBackgroundColor))
     try writeHosted(view, to: path)
 }

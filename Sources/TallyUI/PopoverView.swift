@@ -3,20 +3,17 @@ import TallyCore
 
 public struct PopoverView: View {
     @Bindable private var store: TallyStore
-    @State private var showingSettings = false
-    @State private var showingPullRequests: Bool
 
-    public init(store: TallyStore, showingPullRequests: Bool = false) {
+    public init(store: TallyStore) {
         self.store = store
-        _showingPullRequests = State(initialValue: showingPullRequests)
     }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
-            if showingSettings {
+            if store.screen == .settings {
                 SettingsView(store: store)
-            } else if showingPullRequests, let snapshot = store.currentSnapshot() {
+            } else if store.screen == .pullRequests, let snapshot = store.currentSnapshot() {
                 PullRequestList(snapshot: snapshot, metric: store.metric, now: Date())
             } else if let snapshot = store.currentSnapshot(), let pace = store.pace() {
                 progress(pace, today: snapshot.todayCount(for: store.metric, at: Date()))
@@ -47,13 +44,15 @@ public struct PopoverView: View {
         .padding(16)
         .frame(width: 320)
         .task { await store.refreshIfStale() }
+        // `MenuBarExtra` keeps this view alive between openings, with its state, so the reset is explicit.
+        .onDisappear { store.popoverClosed() }
     }
 
     private var header: some View {
         HStack(alignment: .firstTextBaseline) {
-            if showingPullRequests, !showingSettings, store.currentSnapshot() != nil {
+            if store.screen == .pullRequests, store.currentSnapshot() != nil {
                 Button {
-                    showingPullRequests = false
+                    store.screen = .summary
                 } label: {
                     Label(monthTitle, systemImage: "chevron.left").font(.headline)
                 }
@@ -117,7 +116,7 @@ public struct PopoverView: View {
 
     private func pullRequestsButton(_ snapshot: MonthSnapshot) -> some View {
         Button {
-            showingPullRequests = true
+            store.screen = .pullRequests
         } label: {
             HStack {
                 Text("See the \(snapshot.count(for: store.metric).formatted()) PRs").font(.callout)
@@ -148,10 +147,9 @@ public struct PopoverView: View {
             .help("Refresh now")
             .accessibilityLabel("Refresh now")
             Button {
-                showingSettings.toggle()
-                showingPullRequests = false
+                store.screen = store.screen == .settings ? .summary : .settings
             } label: {
-                Image(systemName: showingSettings ? "gearshape.fill" : "gearshape")
+                Image(systemName: store.screen == .settings ? "gearshape.fill" : "gearshape")
             }
             .help("Settings")
             .accessibilityLabel("Settings")

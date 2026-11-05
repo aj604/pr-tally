@@ -32,6 +32,12 @@ public final class TallyStore {
         }
     }
 
+    /// What the popover shows. Kept here rather than in the view because `MenuBarExtra` keeps the view's own
+    /// state alive while the popover is closed; see `popoverClosed()`.
+    public enum Screen: Sendable { case summary, pullRequests, settings }
+
+    public var screen = Screen.summary
+
     private enum Keys {
         static let goal = "goal"
         static let metric = "metric"
@@ -172,6 +178,12 @@ public final class TallyStore {
         NSTimeZone.resetSystemTimeZone()
         dayChanges += 1
         await refresh()
+    }
+
+    /// The next opening starts at the numbers, not wherever the last one ended: Settings or the PR list
+    /// would otherwise be what you see the next time you glance at the menu bar.
+    public func popoverClosed() {
+        screen = .summary
     }
 
     /// Refreshes when opened, unless the numbers are under a minute old.

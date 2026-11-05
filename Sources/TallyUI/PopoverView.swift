@@ -15,7 +15,7 @@ public struct PopoverView: View {
             if showingSettings {
                 SettingsView(store: store)
             } else if let snapshot = store.snapshot, let pace = store.pace() {
-                progress(pace)
+                progress(pace, today: snapshot.todayCount(for: store.metric, at: Date()))
                 stats(snapshot: snapshot, pace: pace)
                 Divider()
                 MonthCharts(snapshot: snapshot, metric: store.metric, goal: store.goal, now: Date())
@@ -52,7 +52,7 @@ public struct PopoverView: View {
         (store.snapshot?.window.start ?? Date()).formatted(.dateTime.month(.wide).year())
     }
 
-    private func progress(_ pace: Pace) -> some View {
+    private func progress(_ pace: Pace, today: Int) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(pace.count, format: .number)
@@ -64,9 +64,19 @@ public struct PopoverView: View {
                 Spacer(minLength: 0)
             }
             PaceBar(pace: pace)
-            Text(pace.statusText)
-                .font(.callout.weight(.medium))
-                .foregroundStyle(pace.statusColor)
+            HStack(alignment: .firstTextBaseline) {
+                Text(pace.statusText)
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(pace.statusColor)
+                Spacer(minLength: 8)
+                let surplus = pace.quotaSurplus(today: today)
+                if surplus > 0 {
+                    Label("\(surplus.formatted()) over today's quota", systemImage: "arrow.up.right")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.green)
+                        .help("Today's count beat the \(pace.dailyQuota.formatted(.number.precision(.fractionLength(0...1)))) a day a steady pace needs")
+                }
+            }
         }
     }
 

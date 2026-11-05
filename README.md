@@ -6,6 +6,7 @@ The menu bar shows your count next to a progress ring. The ring is orange when y
 
 - Progress against the goal, with a marker where a steady pace would be today
 - How far ahead or behind pace you are, PRs needed per day, and your projected month-end total
+- A marker when today's count beats the daily quota (goal ÷ days in the month), even if you're still behind pace
 - A running total chart and daily bars (hover for any day's numbers)
 - Your top repos, plus merged PRs and total GitHub contributions
 

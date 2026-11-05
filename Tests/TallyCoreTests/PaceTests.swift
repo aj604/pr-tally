@@ -58,6 +58,30 @@ private func date(_ month: Int, _ day: Int, hour: Int = 0) -> Date {
         #expect(pace.delta > 0)
     }
 
+    @Test func countsPRsOverTodaysQuotaEvenWhenBehindPace() {
+        let pace = Pace(goal: 900, count: 100, window: window, at: date(11, 16))
+        #expect(pace.status == .behind)
+        #expect(pace.dailyQuota == 30)
+        #expect(pace.quotaSurplus(today: 35) == 5)
+    }
+
+    @Test func meetingTheQuotaExactlyIsNotAheadOfIt() {
+        let pace = Pace(goal: 900, count: 100, window: window, at: date(11, 16))
+        #expect(pace.quotaSurplus(today: 30) == 0)
+        #expect(pace.quotaSurplus(today: 12) == 0)
+    }
+
+    @Test func aFractionalQuotaIsBeatenByTheNextWholePR() {
+        let pace = Pace(goal: 1000, count: 100, window: window, at: date(11, 16))
+        #expect(pace.quotaSurplus(today: 33) == 0)
+        #expect(pace.quotaSurplus(today: 34) == 1)
+    }
+
+    @Test func noQuotaSurplusOnceTheGoalIsHit() {
+        let pace = Pace(goal: 900, count: 950, window: window, at: date(11, 16))
+        #expect(pace.quotaSurplus(today: 50) == 0)
+    }
+
     @Test func goalHitWinsAndNothingRemains() {
         let pace = Pace(goal: 1000, count: 1200, window: window, at: date(11, 2))
         #expect(pace.status == .goalHit)

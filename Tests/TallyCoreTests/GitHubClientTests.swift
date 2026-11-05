@@ -345,6 +345,18 @@ private final class StubURLProtocol: URLProtocol, @unchecked Sendable {
     }
 }
 
+private final class Box<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Value
+
+    init(_ value: Value) { stored = value }
+
+    var value: Value {
+        get { lock.withLock { stored } }
+        set { lock.withLock { stored = newValue } }
+    }
+}
+
 private final class Counter: @unchecked Sendable {
     private let lock = NSLock()
     private var value = 0
@@ -687,6 +699,49 @@ private struct HeaderCase: Sendable, CustomTestStringConvertible {
     fileprivate func aResetIsCappedAndGarbageFallsBackToAMinute(reset: HeaderCase) async throws {
         let headers = ["X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset.value]
         try await expectLimit((403, headers, Data()), until: now.addingTimeInterval(reset.wait))
+    }
+
+    /// A client whose saved token can be changed between refreshes, as Settings or `gh auth switch` would.
+    private func clientSwitching(
+        from first: String, clock: TestClock = TestClock(now),
+        _ stub: @escaping @Sendable (String, Data) throws -> StubURLProtocol.Response
+    ) -> (client: GitHubClient, use: @Sendable (String) -> Void) {
+        let current = Box(first)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        let client = GitHubClient(
+            tokens: TokenProvider(override: { current.value }, cli: { nil }),
+            session: URLSession(configuration: configuration),
+            retryDelays: [.zero, .zero], now: { clock.now }
+        )
+        return (client, { token in
+            StubURLProtocol.register(token) { body in try stub(token, body) }
+            current.value = token
+        })
+    }
+
+    @Test func aDifferentTokenIsNotHeldBackByAnotherTokensLimit() async throws {
+        let fake = FakeGitHub(prs: [pr(1, createdAt: monthStart)])
+        let requests = Counter()
+        let limited = "tok-\(UUID().uuidString)", other = "tok-\(UUID().uuidString)"
+        let (client, use) = clientSwitching(from: limited) { token, body in
+            requests.next()
+            return token == limited ? (429, ["Retry-After": "1800"], Data()) : try ok(fake, body)
+        }
+        use(limited)
+        let until = now.addingTimeInterval(1800)
+        #expect(await failure(of: client) as? GitHubError == .rateLimited(until: until))
+        #expect(requests.count == 1)
+
+        use(other)
+        let snapshot = try await client.fetchSnapshot(at: now, calendar: utc)
+        #expect(snapshot.count(for: .opened) == 1)
+
+        // Going back to the limited token finds its limit still standing, without another request.
+        let before = requests.count
+        use(limited)
+        #expect(await failure(of: client) as? GitHubError == .rateLimited(until: until))
+        #expect(requests.count == before)
     }
 
     @Test func aClockMovedBackDoesNotKeepTheGateClosed() async throws {

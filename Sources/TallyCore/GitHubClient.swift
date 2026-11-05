@@ -59,10 +59,10 @@ public struct GitHubClient: Sendable {
     init(tokens: TokenProvider, session: URLSession, retryDelays: [Duration], now: @escaping @Sendable () -> Date) {
         let gate = GitHubRateLimitGate()
         let open: @Sendable () async throws -> GraphQLTransport = {
-            try await gate.check(now: now())
             guard let token = await tokens.token() else { throw GitHubError.noToken }
+            try await gate.check(now: now(), token: token)
             return { body in
-                try await gate.check(now: now())
+                try await gate.check(now: now(), token: token)
                 var request = URLRequest(url: URL(string: "https://api.github.com/graphql")!)
                 request.httpMethod = "POST"
                 request.httpBody = body
@@ -72,7 +72,7 @@ public struct GitHubClient: Sendable {
                 if let response = response as? HTTPURLResponse,
                     let retry = GitHubRateLimit.retryDate(for: response, body: data, now: now())
                 {
-                    await gate.block(until: retry)
+                    await gate.block(until: retry, token: token)
                     throw GitHubError.rateLimited(until: retry)
                 }
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0

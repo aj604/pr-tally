@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Reads GitHub's rate limit signals from a response.
@@ -75,21 +76,31 @@ enum GitHubRateLimit {
     }
 }
 
-/// Remembers a rate limit so requests made before it lifts never reach GitHub, where they
+/// Remembers each token's rate limit so requests made before it lifts never reach GitHub, where they
 /// would fail anyway and can extend the penalty.
+///
+/// Limits belong to the token's account, so a token that was never limited (a saved one replacing
+/// the old, or `gh auth switch`) is not held back by another's.
 actor GitHubRateLimitGate {
-    private var blockedUntil: Date?
+    private var blocked: [String: Date] = [:]
 
-    func check(now: Date) throws {
-        guard let blockedUntil else { return }
+    func check(now: Date, token: String) throws {
+        let key = Self.key(for: token)
+        guard let until = blocked[key] else { return }
         // A block further out than any wait can be means the clock moved back since it was set.
-        if now < blockedUntil, blockedUntil.timeIntervalSince(now) <= GitHubRateLimit.maxWait {
-            throw GitHubError.rateLimited(until: blockedUntil)
+        if now < until, until.timeIntervalSince(now) <= GitHubRateLimit.maxWait {
+            throw GitHubError.rateLimited(until: until)
         }
-        self.blockedUntil = nil
+        blocked[key] = nil
     }
 
-    func block(until date: Date) {
-        blockedUntil = max(blockedUntil ?? date, date)
+    func block(until date: Date, token: String) {
+        let key = Self.key(for: token)
+        blocked[key] = max(blocked[key] ?? date, date)
+    }
+
+    /// Held in place of the token so it can't reach a log or a dump.
+    private static func key(for token: String) -> String {
+        SHA256.hash(data: Data(token.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 }

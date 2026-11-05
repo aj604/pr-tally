@@ -5,6 +5,7 @@ public enum GitHubError: Error, Equatable, LocalizedError {
     case unauthorized
     case http(Int)
     case graphQL(String)
+    case rateLimited(until: Date)
 
     public var errorDescription: String? {
         switch self {
@@ -12,6 +13,8 @@ public enum GitHubError: Error, Equatable, LocalizedError {
         case .unauthorized: "GitHub rejected the token. Run `gh auth login` or update it in Settings."
         case .http(let code): "GitHub returned HTTP \(code)."
         case .graphQL(let message): "GitHub error: \(message)"
+        case .rateLimited(let until):
+            "GitHub rate limit reached. Trying again after \(until.formatted(date: .omitted, time: .shortened))."
         }
     }
 }
@@ -23,33 +26,74 @@ public struct GitHubClient: Sendable {
     /// GitHub search returns at most this many results per query, however many match.
     static let searchResultCap = 1000
 
+    /// How long to wait before each retry of a request that failed in passing.
+    static let retryDelays: [Duration] = [.seconds(1), .seconds(3)]
+
     private let transport: GraphQLTransport
+    private let retryDelays: [Duration]
+    /// Readies the transport for one refresh, so every request in it shares one set of credentials.
+    private let open: @Sendable () async throws -> GraphQLTransport
 
     public init(transport: @escaping GraphQLTransport) {
+        self.init(transport: transport, retryDelays: Self.retryDelays)
+    }
+
+    init(transport: @escaping GraphQLTransport, retryDelays: [Duration]) {
+        self.init(transport: transport, retryDelays: retryDelays, open: { transport })
+    }
+
+    private init(
+        transport: @escaping GraphQLTransport, retryDelays: [Duration],
+        open: @escaping @Sendable () async throws -> GraphQLTransport
+    ) {
         self.transport = transport
+        self.retryDelays = retryDelays
+        self.open = open
     }
 
     /// A client that posts to api.github.com, asking `tokens` for credentials on each request.
     public init(tokens: TokenProvider, session: URLSession = .shared) {
-        self.init { body in
+        self.init(tokens: tokens, session: session, retryDelays: Self.retryDelays, now: { Date() })
+    }
+
+    init(tokens: TokenProvider, session: URLSession, retryDelays: [Duration], now: @escaping @Sendable () -> Date) {
+        let gate = GitHubRateLimitGate()
+        let open: @Sendable () async throws -> GraphQLTransport = {
             guard let token = await tokens.token() else { throw GitHubError.noToken }
-            var request = URLRequest(url: URL(string: "https://api.github.com/graphql")!)
-            request.httpMethod = "POST"
-            request.httpBody = body
-            request.setValue("bearer \(token)", forHTTPHeaderField: "Authorization")
-            request.setValue("PRTally", forHTTPHeaderField: "User-Agent")
-            let (data, response) = try await session.data(for: request)
-            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            if status == 401 {
-                await tokens.invalidate()
-                throw GitHubError.unauthorized
+            try await gate.check(now: now(), token: token)
+            return { body in
+                try await gate.check(now: now(), token: token)
+                var request = URLRequest(url: URL(string: "https://api.github.com/graphql")!)
+                request.httpMethod = "POST"
+                request.httpBody = body
+                request.setValue("bearer \(token)", forHTTPHeaderField: "Authorization")
+                request.setValue("PRTally", forHTTPHeaderField: "User-Agent")
+                let (data, response) = try await session.data(for: request)
+                if let response = response as? HTTPURLResponse,
+                    let retry = GitHubRateLimit.retryDate(for: response, body: data, now: now())
+                {
+                    await gate.block(until: retry, token: token)
+                    throw GitHubError.rateLimited(until: retry)
+                }
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                if status == 401 {
+                    await tokens.invalidate()
+                    throw GitHubError.unauthorized
+                }
+                guard status == 200 else { throw GitHubError.http(status) }
+                return data
             }
-            guard status == 200 else { throw GitHubError.http(status) }
-            return data
         }
+        self.init(transport: { body in try await open()(body) }, retryDelays: retryDelays, open: open)
     }
 
     public func fetchSnapshot(at now: Date = Date(), calendar: Calendar = .current) async throws -> MonthSnapshot {
+        // A refresh outlasting the token's lifetime must not switch accounts between pages.
+        let pinned = GitHubClient(transport: try await open(), retryDelays: retryDelays)
+        return try await pinned.fetch(at: now, calendar: calendar)
+    }
+
+    private func fetch(at now: Date, calendar: Calendar) async throws -> MonthSnapshot {
         let window = MonthWindow(containing: now, calendar: calendar)
         let viewer = try await fetchViewer(window: window)
         async let opened = pullRequests(login: viewer.login, qualifier: "created", window: window)
@@ -134,7 +178,7 @@ public struct GitHubClient: Sendable {
 
     private func send<Response: Decodable>(query: String, variables: [String: String]) async throws -> Response {
         let body = try JSONEncoder().encode(Request(query: query, variables: variables))
-        let data = try await transport(body)
+        let data = try await deliver(body)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let envelope = try decoder.decode(Envelope<Response>.self, from: data)
@@ -142,6 +186,32 @@ public struct GitHubClient: Sendable {
         if let error = envelope.errors?.first { throw GitHubError.graphQL(error.message) }
         guard let result = envelope.data else { throw GitHubError.graphQL("Empty response") }
         return result
+    }
+
+    /// Retries the one request, so a blip on a late page doesn't cost the pages already fetched.
+    private func deliver(_ body: Data) async throws -> Data {
+        for delay in retryDelays {
+            do {
+                return try await transport(body)
+            } catch where Self.isTransient(error) {
+                try await Task.sleep(for: delay)
+            }
+        }
+        return try await transport(body)
+    }
+
+    private static func isTransient(_ error: Error) -> Bool {
+        switch error {
+        case GitHubError.http(let status):
+            [500, 502, 503, 504].contains(status)
+        case let error as URLError:
+            [
+                .timedOut, .networkConnectionLost, .notConnectedToInternet,
+                .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed,
+            ].contains(error.code)
+        default:
+            false
+        }
     }
 
     /// UTC avoids a `+` offset in search queries and keeps month edges exact in any time zone.

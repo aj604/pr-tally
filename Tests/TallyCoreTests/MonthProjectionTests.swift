@@ -42,7 +42,7 @@ private func projection(_ daily: [Int], at now: Date) -> MonthProjection? {
     @Test func theRangeNeverFallsBelowWhatIsAlreadyCounted() {
         let result = projection([60, 0, 0, 0, 0], at: date(11, 5, hour: 12))!
         #expect(result.low >= 60)
-        #expect(result.band(at: 0.5).lowerBound >= 60)
+        #expect(result.band(at: 0.05).lowerBound == 60)
     }
 
     @Test func theRangeStartsAtTheCountAndWidensToMonthEnd() {

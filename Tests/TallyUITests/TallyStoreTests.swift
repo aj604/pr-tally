@@ -146,6 +146,22 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
         #expect(store.goal == 1)
     }
 
+    @Test func cancellingWhoeverAskedLetsTheRefreshFinish() async {
+        let gate = Gate()
+        let store = TallyStore(defaults: freshDefaults()) {
+            await gate.pass()
+            try Task.checkCancellation()
+            return snapshot(opened: 3)
+        }
+        let asking = Task { await store.refresh() }
+        while await gate.started == 0 { await Task.yield() }
+        asking.cancel()
+        await gate.release()
+        await asking.value
+        #expect(store.errorMessage == nil)
+        #expect(store.count == 3)
+    }
+
     @Test func metricChoosesWhatTheMenuBarCounts() async {
         let now = Date()
         let pr = PullRequest(

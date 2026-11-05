@@ -148,7 +148,9 @@ public final class TallyStore {
         isRefreshing = true
         let dayChangesAtStart = dayChanges
         do {
-            let fetched = try await fetch()
+            // Runs apart from whoever asked: closing the popover cancels its `.task`, and changing the
+            // interval cancels the schedule, but the numbers are still wanted either way.
+            let fetched = try await Task { try await fetch() }.value
             let previous = snapshot
             snapshot = fetched
             errorMessage = nil

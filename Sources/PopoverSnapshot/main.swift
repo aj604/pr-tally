@@ -3,13 +3,28 @@ import SwiftUI
 import TallyCore
 import TallyUI
 
-// Usage: swift run PopoverSnapshot <output.png> [light|dark|menubar|rollover]
+// Usage: swift run PopoverSnapshot <output.png> [light|dark|menubar|rollover|drilldown|overview]
 @MainActor
 func write(_ view: some View, to path: String) throws {
     let renderer = ImageRenderer(content: view)
     renderer.scale = 4
     guard let image = renderer.cgImage,
         let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])
+    else { throw CocoaError(.fileWriteUnknown) }
+    try png.write(to: URL(fileURLWithPath: path))
+    print("-> \(path)")
+}
+
+/// For views with AppKit-backed controls (pickers, scroll views), which `ImageRenderer` draws as placeholders.
+@MainActor
+func writeHosted(_ view: some View, to path: String) throws {
+    let window = NSWindow(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
+    let host = NSHostingView(rootView: view)
+    window.contentView = host
+    host.frame = NSRect(origin: .zero, size: host.fittingSize)
+    host.layoutSubtreeIfNeeded()
+    guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds),
+        let png = { host.cacheDisplay(in: host.bounds, to: rep); return rep.representation(using: .png, properties: [:]) }()
     else { throw CocoaError(.fileWriteUnknown) }
     try png.write(to: URL(fileURLWithPath: path))
     print("-> \(path)")
@@ -88,6 +103,42 @@ func renderRollover(to path: String) async throws {
     print("menu bar: \(store.menuBarTitle()) | \(store.menuBarAccessibilityLabel)")
 }
 
+/// A busy day in a few repositories, with the pull request list open (or, for `overview`, closed), using no network.
+@MainActor
+func renderFixture(to path: String, listOpen: Bool) async throws {
+    let now = Date()
+    let window = MonthWindow(containing: now)
+    let startOfToday = window.calendar.startOfDay(for: now)
+    let titles = [
+        ("me/app", "Fix crash when the token is missing"), ("me/app", "Bump the minimum macOS version to 14"),
+        ("acme/infra", "Retry failed uploads with exponential backoff and a jitter that depends on the attempt"),
+        ("acme/infra", "Add dashboards for queue depth"), ("me/dotfiles", "Tidy zsh startup"),
+    ]
+    let earlier = (0..<40).map { index -> PullRequest in
+        let (repo, title) = titles[index % titles.count]
+        return PullRequest(
+            id: "old\(index)", title: title, url: URL(string: "https://github.com/\(repo)/pull/\(index)")!,
+            createdAt: max(window.start, startOfToday.addingTimeInterval(-TimeInterval(index + 1) * 20_000)),
+            mergedAt: nil, repository: .init(nameWithOwner: repo)
+        )
+    }
+    let today = titles.enumerated().map { index, entry in
+        PullRequest(
+            id: "today\(index)", title: entry.1, url: URL(string: "https://github.com/\(entry.0)/pull/\(900 + index)")!,
+            createdAt: max(startOfToday, now.addingTimeInterval(-TimeInterval(index) * 3_100 - 60)), mergedAt: nil,
+            repository: .init(nameWithOwner: entry.0)
+        )
+    }
+    let snapshot = MonthSnapshot(
+        login: "me", window: window, opened: earlier + today, merged: [], totalContributions: 612, fetchedAt: now
+    )
+    let store = TallyStore(cache: nil) { snapshot }
+    await store.refresh()
+    let view = PopoverView(store: store, showingPullRequests: listOpen)
+        .background(Color(nsColor: .windowBackgroundColor))
+    try writeHosted(view, to: path)
+}
+
 let arguments = CommandLine.arguments
 let path = arguments.count > 1 ? arguments[1] : "popover.png"
 let mode = arguments.count > 2 ? arguments[2] : "light"
@@ -95,6 +146,8 @@ if mode == "menubar" {
     try renderMenuBar(to: path)
 } else if mode == "rollover" {
     try await renderRollover(to: path)
+} else if mode == "drilldown" || mode == "overview" {
+    try await renderFixture(to: path, listOpen: mode == "drilldown")
 } else {
     try await renderPopover(to: path, scheme: mode == "dark" ? .dark : .light)
 }

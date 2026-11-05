@@ -4,9 +4,11 @@ import TallyCore
 public struct PopoverView: View {
     @Bindable private var store: TallyStore
     @State private var showingSettings = false
+    @State private var showingPullRequests: Bool
 
-    public init(store: TallyStore) {
+    public init(store: TallyStore, showingPullRequests: Bool = false) {
         self.store = store
+        _showingPullRequests = State(initialValue: showingPullRequests)
     }
 
     public var body: some View {
@@ -14,9 +16,12 @@ public struct PopoverView: View {
             header
             if showingSettings {
                 SettingsView(store: store)
+            } else if showingPullRequests, let snapshot = store.currentSnapshot() {
+                PullRequestList(snapshot: snapshot, metric: store.metric, now: Date())
             } else if let snapshot = store.currentSnapshot(), let pace = store.pace() {
                 progress(pace, today: snapshot.todayCount(for: store.metric, at: Date()))
                 stats(snapshot: snapshot, pace: pace)
+                pullRequestsButton(snapshot)
                 Divider()
                 MonthCharts(snapshot: snapshot, metric: store.metric, goal: store.goal, now: Date())
                 TopRepositories(repositories: snapshot.topRepositories(for: store.metric))
@@ -46,7 +51,17 @@ public struct PopoverView: View {
 
     private var header: some View {
         HStack(alignment: .firstTextBaseline) {
-            Text(monthTitle).font(.headline)
+            if showingPullRequests, !showingSettings, store.currentSnapshot() != nil {
+                Button {
+                    showingPullRequests = false
+                } label: {
+                    Label(monthTitle, systemImage: "chevron.left").font(.headline)
+                }
+                .buttonStyle(.plain)
+                .help("Back to the month")
+            } else {
+                Text(monthTitle).font(.headline)
+            }
             Spacer()
             if let login = store.snapshot?.login {
                 Text("@\(login)").font(.caption).foregroundStyle(.secondary)
@@ -100,6 +115,22 @@ public struct PopoverView: View {
         }
     }
 
+    private func pullRequestsButton(_ snapshot: MonthSnapshot) -> some View {
+        Button {
+            showingPullRequests = true
+        } label: {
+            HStack {
+                Text("See the \(snapshot.count(for: store.metric).formatted()) PRs").font(.callout)
+                Spacer()
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help("List the pull requests behind these numbers")
+    }
+
     private var footer: some View {
         HStack(spacing: 12) {
             if let updated = store.updatedText() {
@@ -118,6 +149,7 @@ public struct PopoverView: View {
             .accessibilityLabel("Refresh now")
             Button {
                 showingSettings.toggle()
+                showingPullRequests = false
             } label: {
                 Image(systemName: showingSettings ? "gearshape.fill" : "gearshape")
             }

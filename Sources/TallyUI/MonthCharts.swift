@@ -20,6 +20,10 @@ struct MonthCharts: View {
     private var daily: [Int] { snapshot.dailyCounts(for: metric) }
     private var cumulative: [Int] { snapshot.cumulativeCounts(for: metric, through: now) }
     private var projection: MonthProjection? { snapshot.projection(for: metric, at: now) }
+    /// The plot makes room for a projection past the goal, but not so much that a lumpy early month flattens the line.
+    private var yMax: Int {
+        max(goal, cumulative.last ?? 0, min(projection?.high ?? 0, goal * 3 / 2), 1)
+    }
     private var xDomain: ClosedRange<Double> { 0.5...(Double(dayCount) + 0.5) }
 
     var body: some View {
@@ -83,7 +87,7 @@ struct MonthCharts: View {
             hoverRule
         }
         .chartXScale(domain: xDomain)
-        .chartYScale(domain: 0...max(goal, cumulative.last ?? 0, projection?.high ?? 0, 1))
+        .chartYScale(domain: 0...yMax)
         .chartXAxis(.hidden)
         .chartYAxis {
             AxisMarks(values: [0, goal / 2, goal]) { value in
@@ -109,7 +113,7 @@ struct MonthCharts: View {
                 let band = projection.band(at: progress)
                 AreaMark(
                     x: .value("Day", startX + (endX - startX) * progress),
-                    yStart: .value("Low", band.lowerBound), yEnd: .value("High", band.upperBound),
+                    yStart: .value("Low", band.lowerBound), yEnd: .value("High", min(band.upperBound, Double(yMax))),
                     series: .value("Series", "Range")
                 )
                 .foregroundStyle(Color.accentColor.opacity(0.15))
@@ -117,7 +121,7 @@ struct MonthCharts: View {
             LineMark(x: .value("Day", startX), y: .value("Projected", last), series: .value("Series", "Projected"))
                 .foregroundStyle(Color.accentColor.opacity(0.6))
                 .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [3, 3]))
-            LineMark(x: .value("Day", endX), y: .value("Projected", projection.expected), series: .value("Series", "Projected"))
+            LineMark(x: .value("Day", endX), y: .value("Projected", min(projection.expected, yMax)), series: .value("Series", "Projected"))
                 .foregroundStyle(Color.accentColor.opacity(0.6))
                 .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [3, 3]))
         }

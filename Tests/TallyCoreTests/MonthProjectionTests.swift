@@ -26,11 +26,12 @@ private func projection(_ daily: [Int], at now: Date) -> MonthProjection? {
         #expect(projection(daily, at: now)?.expected == pace.projected)
     }
 
-    @Test func steadyDaysGiveATightRange() {
-        let result = projection([10, 10, 10, 10], at: date(11, 4, hour: 12))!
-        #expect(result.dailyDeviation == 0)
-        #expect(result.low == result.expected)
-        #expect(result.high == result.expected)
+    @Test func identicalDaysStillLeaveARange() {
+        let steady = projection([10, 10, 10, 5], at: date(11, 4, hour: 12))!
+        #expect(steady.low < steady.expected)
+        #expect(steady.expected < steady.high)
+        let quiet = projection([0, 0, 0, 1], at: date(11, 4, hour: 12))!
+        #expect(quiet.low < quiet.high)
     }
 
     @Test func variableDaysGiveARangeAroundTheExpectedFinish() {
@@ -60,11 +61,11 @@ private func projection(_ daily: [Int], at now: Date) -> MonthProjection? {
         #expect(projection([30, 5, 16], at: date(11, 4)) != nil)
     }
 
-    @Test func todaysPartialCountDoesNotWidenTheRange() {
-        let early = projection([10, 10, 10, 0], at: date(11, 4, hour: 1))!
-        let late = projection([10, 10, 10, 10], at: date(11, 4, hour: 22))!
-        #expect(early.dailyDeviation == 0)
-        #expect(late.dailyDeviation == 0)
+    @Test func todaysPartialCountDoesNotChangeTheSpreadOfCompletedDays() {
+        let quiet = projection([10, 30, 50, 0], at: date(11, 4, hour: 1))!
+        let busy = projection([10, 30, 50, 100], at: date(11, 4, hour: 1))!
+        #expect(quiet.dailyDeviation == 20)
+        #expect(busy.dailyDeviation == 20)
     }
 
     @Test func noRangeOnceTheMonthIsOver() {
@@ -84,5 +85,55 @@ private func projection(_ daily: [Int], at now: Date) -> MonthProjection? {
         let now = date(11, 5, hour: 12)
         #expect(snapshot.projection(for: .opened, at: now)?.count == 12)
         #expect(snapshot.projection(for: .merged, at: now)?.count == 1)
+    }
+
+    /// Steady days at 10 a day should finish inside the range about 80% of the time, early and late.
+    @Test func steadyMonthsFinishInsideTheRangeAboutEightyPercentOfTheTime() {
+        var random = SplitMix64(seed: 42)
+        let trials = 1500
+        for completed in [3, 10, 20] {
+            var inside = 0
+            for _ in 0..<trials {
+                let days = (0..<30).map { _ in random.poisson(10) }
+                // Noon on the next day, with half of that day's PRs in.
+                var daily = Array(days.prefix(completed)) + [random.binomial(days[completed], 0.5)]
+                daily += Array(repeating: 0, count: 30 - daily.count)
+                let now = date(11, completed + 1, hour: 12)
+                let result = MonthProjection(count: daily.reduce(0, +), daily: daily, window: window, at: now)!
+                if result.low <= days.reduce(0, +), days.reduce(0, +) <= result.high { inside += 1 }
+            }
+            let coverage = Double(inside) / Double(trials)
+            #expect(abs(coverage - 0.8) < 0.05, "coverage after \(completed) days was \(coverage)")
+        }
+    }
+}
+
+private struct SplitMix64 {
+    var state: UInt64
+    init(seed: UInt64) { state = seed }
+
+    mutating func next() -> UInt64 {
+        state &+= 0x9E37_79B9_7F4A_7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+        return z ^ (z >> 31)
+    }
+
+    mutating func uniform() -> Double { Double(next() >> 11) / Double(1 << 53) }
+
+    mutating func poisson(_ mean: Double) -> Int {
+        let limit = exp(-mean)
+        var product = uniform()
+        var count = 0
+        while product > limit {
+            count += 1
+            product *= uniform()
+        }
+        return count
+    }
+
+    mutating func binomial(_ trials: Int, _ chance: Double) -> Int {
+        (0..<trials).filter { _ in uniform() < chance }.count
     }
 }

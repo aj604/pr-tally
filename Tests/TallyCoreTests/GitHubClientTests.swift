@@ -263,6 +263,14 @@ private final class TestClock: @unchecked Sendable {
     }
 }
 
+/// A header value and how long the client should wait because of it.
+private struct HeaderCase: Sendable, CustomTestStringConvertible {
+    let value: String
+    let wait: TimeInterval
+    init(_ value: String, _ wait: TimeInterval) { (self.value, self.wait) = (value, wait) }
+    var testDescription: String { "\(value.prefix(40)) -> \(wait)s" }
+}
+
 @Suite struct GitHubHTTPTests {
     private func http(
         clock: TestClock = TestClock(now), retryDelays: [Duration] = [.zero, .zero],
@@ -431,6 +439,110 @@ private final class TestClock: @unchecked Sendable {
         clock.now = lifts
         let snapshot = try await client.fetchSnapshot(at: now, calendar: utc)
         #expect(snapshot.count(for: .opened) == 1)
+    }
+
+    /// The first request is limited by `limit`. The error must name `expected`, and the gate must be
+    /// open again at that moment.
+    private func expectLimit(
+        _ limit: StubURLProtocol.Response, until expected: Date, sourceLocation: SourceLocation = #_sourceLocation
+    ) async throws {
+        let clock = TestClock(now)
+        let fake = FakeGitHub(prs: [pr(1, createdAt: monthStart)])
+        let requests = Counter()
+        let client = http(clock: clock) { body in
+            if requests.next() == 1 { return limit }
+            return try ok(fake, body)
+        }
+        let error = await failure(of: client)
+        #expect(error as? GitHubError == .rateLimited(until: expected), sourceLocation: sourceLocation)
+        clock.now = expected
+        let snapshot = try await client.fetchSnapshot(at: now, calendar: utc)
+        #expect(snapshot.count(for: .opened) == 1, sourceLocation: sourceLocation)
+    }
+
+    @Test(arguments: [
+        HeaderCase("120", 120),
+        HeaderCase("99999999999", 3660),
+        HeaderCase("1" + String(repeating: "0", count: 400), 60),
+        HeaderCase("1e308", 60), HeaderCase("inf", 60), HeaderCase("nan", 60), HeaderCase("-500", 60),
+        HeaderCase("0", 60), HeaderCase("1.5", 60), HeaderCase("soon", 60),
+        HeaderCase("Wed, 21 Oct 2037 07:28:00 GMT", 60),
+    ])
+    fileprivate func retryAfterIsReadStrictlyAndCapped(header: HeaderCase) async throws {
+        try await expectLimit((429, ["Retry-After": header.value], Data()), until: now.addingTimeInterval(header.wait))
+    }
+
+    @Test func aWholeHourRetryAfterIsHonored() async throws {
+        try await expectLimit((429, ["Retry-After": "3600"], Data()), until: now.addingTimeInterval(3600))
+    }
+
+    @Test func aSecondaryLimitIsCappedToo() async throws {
+        let body = Data(#"{"message":"You have exceeded a secondary rate limit."}"#.utf8)
+        try await expectLimit((403, ["Retry-After": "99999999999"], body), until: now.addingTimeInterval(3660))
+    }
+
+    @Test(arguments: [
+        HeaderCase(String(Int(now.addingTimeInterval(100 * 365 * 86400).timeIntervalSince1970)), 3660),
+        HeaderCase(String(Int(now.addingTimeInterval(1800).timeIntervalSince1970 * 1000)), 3660),
+        HeaderCase(String(Int(now.addingTimeInterval(-60).timeIntervalSince1970)), 60),
+        HeaderCase("inf", 60), HeaderCase("nan", 60), HeaderCase("1e308", 60), HeaderCase("-1", 60),
+        HeaderCase("garbage", 60),
+    ])
+    fileprivate func aResetIsCappedAndGarbageFallsBackToAMinute(reset: HeaderCase) async throws {
+        let headers = ["X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset.value]
+        try await expectLimit((403, headers, Data()), until: now.addingTimeInterval(reset.wait))
+    }
+
+    @Test func aClockMovedBackDoesNotKeepTheGateClosed() async throws {
+        let clock = TestClock(now)
+        let fake = FakeGitHub(prs: [pr(1, createdAt: monthStart)])
+        let requests = Counter()
+        let client = http(clock: clock) { body in
+            if requests.next() == 1 { return (429, [:], Data()) }
+            return try ok(fake, body)
+        }
+        let until = now.addingTimeInterval(60)
+        #expect(await failure(of: client) as? GitHubError == .rateLimited(until: until))
+
+        // A small step back is still within a possible wait, so the limit stands.
+        clock.now = now.addingTimeInterval(-10)
+        #expect(await failure(of: client) as? GitHubError == .rateLimited(until: until))
+        #expect(requests.count == 1)
+
+        // A step back of a day can't be a wait GitHub asked for.
+        clock.now = now.addingTimeInterval(-86400)
+        let snapshot = try await client.fetchSnapshot(at: now, calendar: utc)
+        #expect(snapshot.count(for: .opened) == 1)
+    }
+
+    @Test(arguments: [
+        "You can change the org rate limit settings in your organization.",
+        "Resource not accessible by personal access token: cannot generate limited tokens.",
+        "Repository 'octo/rate limiter' is archived.",
+    ])
+    func aForbiddenMessageThatOnlyMentionsLimitsIsNotARateLimit(message: String) async {
+        let requests = Counter()
+        let body = Data(#"{"message":"\#(message)"}"#.utf8)
+        let client = http { _ in
+            _ = requests.next()
+            return (403, ["X-RateLimit-Remaining": "4000"], body)
+        }
+        for _ in 0..<2 { #expect(await failure(of: client) as? GitHubError == .http(403)) }
+        #expect(requests.count == 2)
+    }
+
+    @Test func aSingleSignOnForbiddenOnTheLastRequestOfTheBudgetIsNotARateLimit() async {
+        let requests = Counter()
+        let reset = String(Int(now.addingTimeInterval(1800).timeIntervalSince1970))
+        let body = Data(
+            #"{"message":"Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization."}"#
+                .utf8)
+        let client = http { _ in
+            _ = requests.next()
+            return (403, ["X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset, "Retry-After": "120"], body)
+        }
+        for _ in 0..<2 { #expect(await failure(of: client) as? GitHubError == .http(403)) }
+        #expect(requests.count == 2)
     }
 
     @Test func aRateLimitTellsThePersonWhenItWillTryAgain() throws {

@@ -56,10 +56,14 @@ public final class TallyStore {
 
     public var count: Int? { currentSnapshot()?.count(for: metric) }
 
-    /// The last good numbers, as long as they're for the month containing `now`.
-    public func currentSnapshot(at now: Date = Date()) -> MonthSnapshot? {
+    /// The last good numbers, as long as they're for the month containing `now`. That is the month on the
+    /// user's calendar as well as the window's own instants, which stop agreeing when the time zone changes.
+    public func currentSnapshot(at now: Date = Date(), calendar: Calendar = .current) -> MonthSnapshot? {
         _ = dayChanges
-        return snapshot.flatMap { $0.window.contains(now) ? $0 : nil }
+        guard let snapshot, snapshot.window.contains(now) else { return nil }
+        let windowMonth = snapshot.window.calendar.dateComponents([.year, .month], from: snapshot.window.start)
+        let localMonth = calendar.dateComponents([.year, .month], from: now)
+        return windowMonth.year == localMonth.year && windowMonth.month == localMonth.month ? snapshot : nil
     }
 
     public func pace(at now: Date = Date()) -> Pace? {
@@ -135,7 +139,7 @@ public final class TallyStore {
         await refresh()
     }
 
-    /// Begins refreshing on a schedule, after the Mac wakes, and when the day changes. Safe to call more than once.
+    /// Begins refreshing on a schedule, after the Mac wakes, and when the day or time zone changes. Safe to call more than once.
     public func start() {
         if schedule == nil { startSchedule() }
         guard !watchingSystem else { return }
@@ -151,6 +155,13 @@ public final class TallyStore {
             // Posted at midnight, or on wake if the Mac slept through it.
             let days = NotificationCenter.default.notifications(named: .NSCalendarDayChanged)
             for await _ in days.map({ _ in () }) {
+                await self?.calendarDayChanged()
+            }
+        }
+        Task { [weak self] in
+            // A new zone can put today in a different month, with no midnight to say so.
+            let zones = NotificationCenter.default.notifications(named: .NSSystemTimeZoneDidChange)
+            for await _ in zones.map({ _ in () }) {
                 await self?.calendarDayChanged()
             }
         }

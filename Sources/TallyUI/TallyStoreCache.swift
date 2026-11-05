@@ -63,7 +63,9 @@ private struct StoredSnapshot: Codable {
 
     let login: String
     let monthStart: Date
-    let calendar: Calendar
+    /// Stored by name rather than as a `Calendar`, which decodes into the launch-time calendar and zone.
+    let calendarIdentifier: Calendar.Identifier
+    let timeZoneIdentifier: String
     let opened: [StoredPullRequest]
     let merged: [StoredPullRequest]
     let totalContributions: Int
@@ -72,15 +74,21 @@ private struct StoredSnapshot: Codable {
     init(_ snapshot: MonthSnapshot) {
         login = snapshot.login
         monthStart = snapshot.window.start
-        calendar = snapshot.window.calendar
+        calendarIdentifier = snapshot.window.calendar.identifier
+        timeZoneIdentifier = snapshot.window.calendar.timeZone.identifier
         opened = snapshot.opened.map(StoredPullRequest.init)
         merged = snapshot.merged.map(StoredPullRequest.init)
         totalContributions = snapshot.totalContributions
         fetchedAt = snapshot.fetchedAt
     }
 
-    var snapshot: MonthSnapshot {
-        MonthSnapshot(
+    /// The month the numbers were counted for, in the zone they were counted in, whatever zone this launch is in.
+    /// Nil when the zone isn't one this system knows.
+    var snapshot: MonthSnapshot? {
+        guard let timeZone = TimeZone(identifier: timeZoneIdentifier) else { return nil }
+        var calendar = Calendar(identifier: calendarIdentifier)
+        calendar.timeZone = timeZone
+        return MonthSnapshot(
             login: login, window: MonthWindow(containing: monthStart, calendar: calendar),
             opened: opened.map(\.pullRequest), merged: merged.map(\.pullRequest),
             totalContributions: totalContributions, fetchedAt: fetchedAt

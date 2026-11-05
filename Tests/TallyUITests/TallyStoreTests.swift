@@ -38,6 +38,30 @@ private func monthSnapshot(openedByDay: [(Date, Int)], at now: Date) -> MonthSna
     )
 }
 
+private func calendar(in zone: String) -> Calendar {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: zone)!
+    return calendar
+}
+
+private func date(_ month: Int, _ day: Int, _ hour: Int, _ minute: Int = 0, in calendar: Calendar) -> Date {
+    calendar.date(from: DateComponents(year: 2026, month: month, day: day, hour: hour, minute: minute))!
+}
+
+/// A snapshot counted in `calendar`'s zone, whatever zone this machine is in.
+private func snapshot(opened: Int, at now: Date, in calendar: Calendar) -> MonthSnapshot {
+    let prs = (0..<opened).map {
+        PullRequest(
+            id: "\($0)", title: "", url: URL(string: "https://github.com")!, createdAt: now, mergedAt: nil,
+            repository: .init(nameWithOwner: "me/app")
+        )
+    }
+    return MonthSnapshot(
+        login: "me", window: MonthWindow(containing: now, calendar: calendar), opened: prs, merged: [],
+        totalContributions: 0, fetchedAt: now
+    )
+}
+
 /// Replays results in order, repeating the last.
 private actor Script {
     private var results: [Result<MonthSnapshot, Error>]
@@ -79,8 +103,9 @@ private actor Gate {
 
 private let october31 = Calendar.current.date(from: DateComponents(year: 2026, month: 10, day: 31, hour: 18))!
 
+/// Serialized because the notification tests post on the shared center, which every started store hears.
 @MainActor
-@Suite struct TallyStoreTests {
+@Suite(.serialized) struct TallyStoreTests {
     @Test func settingsDefaultToAThousandOpenedPRs() {
         let store = TallyStore(defaults: freshDefaults()) { snapshot(opened: 0) }
         #expect(store.goal == 1000)
@@ -302,6 +327,140 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
             try await Task.sleep(for: .milliseconds(10))
         }
         #expect(await script.calls >= 2)
+    }
+
+    // MARK: Time zone changes
+
+    /// `Calendar`'s own Codable form says "the current calendar" for `Calendar.current`, which comes back as
+    /// whatever this launch's zone is. The zone has to be restored from what was saved instead.
+    @Test(arguments: ["Asia/Tokyo", "America/New_York", "Pacific/Honolulu", "Pacific/Auckland"])
+    func savedMonthComesBackInTheZoneItWasSavedIn(zone: String) throws {
+        let saved = calendar(in: zone)
+        // Just past local midnight, so that any other zone's reading of the window start is in another month.
+        let now = date(11, 1, 0, 30, in: saved)
+        let (cache, url) = freshCache()
+        cache.save(snapshot(opened: 3))  // The real app's calendar: Calendar.current.
+        var file = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        // Stand in for the file having been saved while the system was in `zone`.
+        file["timeZoneIdentifier"] = zone
+        file["monthStart"] = date(11, 1, 0, in: saved).timeIntervalSinceReferenceDate
+        try JSONSerialization.data(withJSONObject: file).write(to: url)
+
+        let window = try #require(cache.load()).window
+        #expect(window.calendar.timeZone.identifier == zone)
+        #expect(window.calendar.identifier == .gregorian)
+        #expect(window.start == date(11, 1, 0, in: saved))
+        #expect(window.end == date(12, 1, 0, in: saved))
+        #expect(window.calendar.component(.month, from: window.start) == 11)
+        #expect(window.contains(now))
+    }
+
+    @Test func relaunchInANewZoneStillHasTheMonthTheNumbersWereCountedFor() throws {
+        let tokyo = calendar(in: "Asia/Tokyo")
+        let newYork = calendar(in: "America/New_York")
+        let (cache, _) = freshCache()
+        cache.save(snapshot(opened: 40, at: date(11, 3, 12, in: tokyo), in: tokyo))
+
+        let store = TallyStore(defaults: freshDefaults(), cache: cache) { throw Offline() }
+        let november5 = date(11, 5, 12, in: newYork)
+        #expect(store.currentSnapshot(at: november5, calendar: newYork)?.opened.count == 40)
+        #expect(store.lastMonthSummary(at: november5) == nil)
+        let november1 = date(11, 1, 0, 30, in: tokyo)
+        #expect(store.snapshot.map { $0.window.calendar.component(.month, from: $0.window.start) } == 11)
+        #expect(store.currentSnapshot(at: november1, calendar: newYork) == nil)
+    }
+
+    @Test func fileFromTheOldFormatOrWithUnknownNamesLoadsAsNothing() throws {
+        let (cache, url) = freshCache()
+        cache.save(snapshot(opened: 1))
+        let saved = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        #expect(cache.load() != nil)
+
+        func writeAndLoad(_ change: (inout [String: Any]) -> Void) throws -> MonthSnapshot? {
+            var edited = saved
+            change(&edited)
+            try JSONSerialization.data(withJSONObject: edited).write(to: url)
+            return cache.load()
+        }
+        #expect(try writeAndLoad { $0["timeZoneIdentifier"] = "Mars/Olympus_Mons" } == nil)
+        #expect(try writeAndLoad { $0["calendarIdentifier"] = ["klingon": [String: String]()] } == nil)
+        #expect(try writeAndLoad {
+            $0["timeZoneIdentifier"] = nil
+            $0["calendarIdentifier"] = nil
+            $0["calendar"] = ["identifier": "gregorian", "timeZone": ["identifier": "Asia/Tokyo"]]
+        } == nil)
+    }
+
+    @Test func zoneChangeMidMonthKeepsTheNumbersCurrent() async {
+        let newYork = calendar(in: "America/New_York")
+        let tokyo = calendar(in: "Asia/Tokyo")
+        let fetched = date(11, 15, 12, in: tokyo)
+        let store = TallyStore(defaults: freshDefaults()) { snapshot(opened: 7, at: fetched, in: tokyo) }
+        await store.refresh()
+        // 22:00 on the 14th in New York: a different day, the same month.
+        #expect(store.currentSnapshot(at: fetched, calendar: newYork)?.opened.count == 7)
+        #expect(store.currentSnapshot(at: fetched, calendar: tokyo)?.opened.count == 7)
+    }
+
+    @Test func movingEastIntoTheNextMonthShowsWaitingNotTheEndedMonth() async {
+        let newYork = calendar(in: "America/New_York")
+        let tokyo = calendar(in: "Asia/Tokyo")
+        let fetched = date(10, 31, 22, in: newYork)
+        let store = TallyStore(defaults: freshDefaults()) { snapshot(opened: 842, at: fetched, in: newYork) }
+        await store.refresh()
+        #expect(store.currentSnapshot(at: fetched, calendar: newYork)?.opened.count == 842)
+        // Still inside the window's instants, but already November on the wall.
+        #expect(store.currentSnapshot(at: fetched, calendar: tokyo) == nil)
+    }
+
+    @Test func movingWestIntoTheMonthBeforeShowsWaitingNotTheNewMonth() async {
+        let newYork = calendar(in: "America/New_York")
+        let tokyo = calendar(in: "Asia/Tokyo")
+        let fetched = date(11, 1, 1, in: tokyo)
+        let store = TallyStore(defaults: freshDefaults()) { snapshot(opened: 3, at: fetched, in: tokyo) }
+        await store.refresh()
+        #expect(store.currentSnapshot(at: fetched, calendar: tokyo)?.opened.count == 3)
+        #expect(store.currentSnapshot(at: fetched, calendar: newYork) == nil)
+    }
+
+    @Test func sameMonthNumberOnTheWallIsNotEnoughWhenNowIsOutsideTheWindow() async {
+        let newYork = calendar(in: "America/New_York")
+        let tokyo = calendar(in: "Asia/Tokyo")
+        let fetched = date(11, 3, 12, in: newYork)
+        let store = TallyStore(defaults: freshDefaults()) { snapshot(opened: 5, at: fetched, in: newYork) }
+        await store.refresh()
+        // 05:00 on Nov 1 in Tokyo is still Oct 31 in New York, before this window opens.
+        let beforeTheWindow = date(11, 1, 5, in: tokyo)
+        #expect(store.currentSnapshot(at: beforeTheWindow, calendar: tokyo) == nil)
+        #expect(store.currentSnapshot(at: date(11, 2, 12, in: tokyo), calendar: tokyo)?.opened.count == 5)
+    }
+
+    @Test func timeZoneChangeRedrawsAndRefreshes() async throws {
+        let script = Script([.success(snapshot(opened: 1))])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        store.start()
+        while await script.calls < 1 { try await Task.sleep(for: .milliseconds(10)) }
+        for _ in 0..<200 where await script.calls < 2 {
+            NotificationCenter.default.post(name: .NSSystemTimeZoneDidChange, object: nil)
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await script.calls >= 2)
+    }
+
+    @Test func timeZoneChangeRedrawsTheMenuBarEvenWhenTheRefreshFails() async throws {
+        let store = TallyStore(defaults: freshDefaults()) { throw Offline() }
+        store.start()
+        let redrawn = Redraw()
+        withObservationTracking {
+            _ = store.menuBarTitle()
+        } onChange: {
+            redrawn.fired = true
+        }
+        for _ in 0..<200 where !redrawn.fired {
+            NotificationCenter.default.post(name: .NSSystemTimeZoneDidChange, object: nil)
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(redrawn.fired)
     }
 
     @Test func fetchThatSpansMidnightIsFollowedByAFreshOne() async throws {

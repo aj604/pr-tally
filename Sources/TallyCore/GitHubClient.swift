@@ -31,14 +31,24 @@ public struct GitHubClient: Sendable {
 
     private let transport: GraphQLTransport
     private let retryDelays: [Duration]
+    /// Readies the transport for one refresh, so every request in it shares one set of credentials.
+    private let open: @Sendable () async throws -> GraphQLTransport
 
     public init(transport: @escaping GraphQLTransport) {
         self.init(transport: transport, retryDelays: Self.retryDelays)
     }
 
     init(transport: @escaping GraphQLTransport, retryDelays: [Duration]) {
+        self.init(transport: transport, retryDelays: retryDelays, open: { transport })
+    }
+
+    private init(
+        transport: @escaping GraphQLTransport, retryDelays: [Duration],
+        open: @escaping @Sendable () async throws -> GraphQLTransport
+    ) {
         self.transport = transport
         self.retryDelays = retryDelays
+        self.open = open
     }
 
     /// A client that posts to api.github.com, asking `tokens` for credentials on each request.
@@ -48,32 +58,42 @@ public struct GitHubClient: Sendable {
 
     init(tokens: TokenProvider, session: URLSession, retryDelays: [Duration], now: @escaping @Sendable () -> Date) {
         let gate = GitHubRateLimitGate()
-        self.init(transport: { body in
+        let open: @Sendable () async throws -> GraphQLTransport = {
             try await gate.check(now: now())
             guard let token = await tokens.token() else { throw GitHubError.noToken }
-            var request = URLRequest(url: URL(string: "https://api.github.com/graphql")!)
-            request.httpMethod = "POST"
-            request.httpBody = body
-            request.setValue("bearer \(token)", forHTTPHeaderField: "Authorization")
-            request.setValue("PRTally", forHTTPHeaderField: "User-Agent")
-            let (data, response) = try await session.data(for: request)
-            if let response = response as? HTTPURLResponse,
-                let retry = GitHubRateLimit.retryDate(for: response, body: data, now: now())
-            {
-                await gate.block(until: retry)
-                throw GitHubError.rateLimited(until: retry)
+            return { body in
+                try await gate.check(now: now())
+                var request = URLRequest(url: URL(string: "https://api.github.com/graphql")!)
+                request.httpMethod = "POST"
+                request.httpBody = body
+                request.setValue("bearer \(token)", forHTTPHeaderField: "Authorization")
+                request.setValue("PRTally", forHTTPHeaderField: "User-Agent")
+                let (data, response) = try await session.data(for: request)
+                if let response = response as? HTTPURLResponse,
+                    let retry = GitHubRateLimit.retryDate(for: response, body: data, now: now())
+                {
+                    await gate.block(until: retry)
+                    throw GitHubError.rateLimited(until: retry)
+                }
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                if status == 401 {
+                    await tokens.invalidate()
+                    throw GitHubError.unauthorized
+                }
+                guard status == 200 else { throw GitHubError.http(status) }
+                return data
             }
-            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            if status == 401 {
-                await tokens.invalidate()
-                throw GitHubError.unauthorized
-            }
-            guard status == 200 else { throw GitHubError.http(status) }
-            return data
-        }, retryDelays: retryDelays)
+        }
+        self.init(transport: { body in try await open()(body) }, retryDelays: retryDelays, open: open)
     }
 
     public func fetchSnapshot(at now: Date = Date(), calendar: Calendar = .current) async throws -> MonthSnapshot {
+        // A refresh outlasting the token's lifetime must not switch accounts between pages.
+        let pinned = GitHubClient(transport: try await open(), retryDelays: retryDelays)
+        return try await pinned.fetch(at: now, calendar: calendar)
+    }
+
+    private func fetch(at now: Date, calendar: Calendar) async throws -> MonthSnapshot {
         let window = MonthWindow(containing: now, calendar: calendar)
         let viewer = try await fetchViewer(window: window)
         async let opened = pullRequests(login: viewer.login, qualifier: "created", window: window)

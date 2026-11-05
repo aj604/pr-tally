@@ -161,50 +161,113 @@ private func client(_ fake: FakeGitHub) -> GitHubClient {
         #expect(await provider.token() == nil)
     }
 
-    private func provider(cli: Counter, tokens: [String?], clock: TestClock) -> TokenProvider {
+    /// A provider whose CLI answers from `reads` in turn (repeating the last), on a clock the test moves.
+    private func provider(reads: Counter, _ answers: [String?], clock: TestUptime) -> TokenProvider {
         TokenProvider(
             override: { nil },
-            cli: { tokens[min(cli.next(), tokens.count) - 1] },
-            lifetime: 60,
+            cli: { answers[min(reads.next(), answers.count) - 1] },
+            lifetime: .seconds(60),
+            retryFloor: .seconds(10),
             now: { clock.now }
         )
     }
 
     @Test func reusesTheCLITokenWithinItsLifetime() async {
         let reads = Counter()
-        let clock = TestClock(Date(timeIntervalSince1970: 0))
-        let provider = provider(cli: reads, tokens: ["first", "second"], clock: clock)
+        let clock = TestUptime()
+        let provider = provider(reads: reads, ["first", "second"], clock: clock)
         #expect(await provider.token() == "first")
-        clock.now = Date(timeIntervalSince1970: 59)
+        clock.advance(.seconds(59))
         #expect(await provider.token() == "first")
         #expect(reads.count == 1)
     }
 
     @Test func picksUpAnotherGitHubAccountOnceTheLifetimeEnds() async {
         let reads = Counter()
-        let clock = TestClock(Date(timeIntervalSince1970: 0))
-        let provider = provider(cli: reads, tokens: ["work", "personal"], clock: clock)
+        let clock = TestUptime()
+        let provider = provider(reads: reads, ["work", "personal"], clock: clock)
         #expect(await provider.token() == "work")
-        clock.now = Date(timeIntervalSince1970: 60)
+        clock.advance(.seconds(60))
         #expect(await provider.token() == "personal")
     }
 
-    @Test func dropsTheCLITokenAfterLogout() async {
+    @Test func aFailedReadKeepsTheWorkingToken() async {
         let reads = Counter()
-        let clock = TestClock(Date(timeIntervalSince1970: 0))
-        let provider = provider(cli: reads, tokens: ["work", nil], clock: clock)
+        let clock = TestUptime()
+        let provider = provider(reads: reads, ["work", nil, nil, "work"], clock: clock)
         #expect(await provider.token() == "work")
-        clock.now = Date(timeIntervalSince1970: 120)
+        clock.advance(.seconds(60))
+        #expect(await provider.token() == "work")
+        clock.advance(.seconds(60))
+        #expect(await provider.token() == "work")
+        clock.advance(.seconds(60))
+        #expect(await provider.token() == "work")
+        #expect(reads.count == 4)
+    }
+
+    @Test func doesNotRespawnTheCLIRightAfterAFailedRead() async {
+        let reads = Counter()
+        let clock = TestUptime()
+        let provider = provider(reads: reads, ["work", nil, "switched"], clock: clock)
+        #expect(await provider.token() == "work")
+        clock.advance(.seconds(60))
+        for _ in 0..<5 { #expect(await provider.token() == "work") }
+        #expect(reads.count == 2)
+        clock.advance(.seconds(10))
+        #expect(await provider.token() == "switched")
+        #expect(reads.count == 3)
+    }
+
+    @Test func dropsTheCLITokenAfterRepeatedFailuresMeanLogout() async {
+        let reads = Counter()
+        let clock = TestUptime()
+        let provider = provider(reads: reads, ["work", nil], clock: clock)
+        #expect(await provider.token() == "work")
+        for _ in 0..<2 {
+            clock.advance(.seconds(60))
+            #expect(await provider.token() == "work")
+        }
+        clock.advance(.seconds(60))
         #expect(await provider.token() == nil)
+    }
+
+    @Test func aFailureStreakStartsOverAfterASuccessfulRead() async {
+        let reads = Counter()
+        let clock = TestUptime()
+        let provider = provider(reads: reads, ["work", nil, nil, "work", nil, nil], clock: clock)
+        for _ in 0..<6 {
+            #expect(await provider.token() == "work")
+            clock.advance(.seconds(60))
+        }
+    }
+
+    @Test func aMissingLoginIsRetriedNoSoonerThanTheFloor() async {
+        let reads = Counter()
+        let clock = TestUptime()
+        let provider = provider(reads: reads, [nil, "logged in"], clock: clock)
+        for _ in 0..<4 { #expect(await provider.token() == nil) }
+        #expect(reads.count == 1)
+        clock.advance(.seconds(10))
+        #expect(await provider.token() == "logged in")
     }
 
     @Test func invalidatingForcesAnImmediateReread() async {
         let reads = Counter()
-        let clock = TestClock(Date(timeIntervalSince1970: 0))
-        let provider = provider(cli: reads, tokens: ["stale", "fresh"], clock: clock)
+        let clock = TestUptime()
+        let provider = provider(reads: reads, ["stale", "fresh"], clock: clock)
         #expect(await provider.token() == "stale")
         await provider.invalidate()
         #expect(await provider.token() == "fresh")
+    }
+
+    @Test func aSavedTokenWinsWithoutTouchingTheCLI() async {
+        let reads = Counter()
+        let provider = TokenProvider(
+            override: { "saved" }, cli: { "cli\(reads.next())" },
+            lifetime: .seconds(60), retryFloor: .seconds(10), now: { .now }
+        )
+        #expect(await provider.token() == "saved")
+        #expect(reads.count == 0)
     }
 
     @Test func runReturnsTrimmedOutputAndHandlesFailure() {
@@ -297,6 +360,16 @@ private final class Counter: @unchecked Sendable {
     var count: Int { lock.withLock { value } }
 }
 
+private final class TokenLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var seen: [String] = []
+
+    func add(_ token: String) { lock.withLock { if !seen.contains(token) { seen.append(token) } } }
+
+    /// Distinct tokens, in the order first used.
+    var tokens: [String] { lock.withLock { seen } }
+}
+
 private final class TestClock: @unchecked Sendable {
     private let lock = NSLock()
     private var current: Date
@@ -307,6 +380,16 @@ private final class TestClock: @unchecked Sendable {
         get { lock.withLock { current } }
         set { lock.withLock { current = newValue } }
     }
+}
+
+/// A monotonic clock the test moves by hand.
+private final class TestUptime: @unchecked Sendable {
+    private let lock = NSLock()
+    private let start = ContinuousClock.now
+    private var elapsed = Duration.zero
+
+    var now: ContinuousClock.Instant { lock.withLock { start + elapsed } }
+    func advance(_ by: Duration) { lock.withLock { elapsed += by } }
 }
 
 /// A header value and how long the client should wait because of it.
@@ -350,6 +433,73 @@ private struct HeaderCase: Sendable, CustomTestStringConvertible {
         } catch {
             return error
         }
+    }
+
+    /// A client whose tokens come from a `TokenProvider` that reads `answers` in turn, one token per read.
+    private func clientReading(
+        _ answers: [String?], clock: TestUptime, reads: Counter,
+        _ stub: @escaping @Sendable (String, Data) throws -> StubURLProtocol.Response
+    ) -> GitHubClient {
+        for token in answers.compactMap({ $0 }) {
+            StubURLProtocol.register(token) { body in try stub(token, body) }
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        let provider = TokenProvider(
+            override: { nil },
+            cli: { answers[min(reads.next(), answers.count) - 1] },
+            lifetime: .seconds(60), retryFloor: .seconds(10), now: { clock.now }
+        )
+        return GitHubClient(
+            tokens: provider, session: URLSession(configuration: configuration),
+            retryDelays: [.zero, .zero], now: { now }
+        )
+    }
+
+    @Test func aRefreshUsesOneTokenEvenIfItOutlastsTheLifetime() async throws {
+        let fake = FakeGitHub(prs: (0..<250).map { pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 60)) })
+        let clock = TestUptime()
+        let reads = Counter()
+        let used = TokenLog()
+        let first = "tok-\(UUID().uuidString)", second = "tok-\(UUID().uuidString)"
+        let client = clientReading([first, second], clock: clock, reads: reads) { token, body in
+            used.add(token)
+            // Each request takes long enough that the cached token would expire several times.
+            clock.advance(.seconds(45))
+            return try ok(fake, body)
+        }
+        let snapshot = try await client.fetchSnapshot(at: now, calendar: utc)
+        #expect(snapshot.count(for: .opened) == 250)
+        #expect(used.tokens == [first])
+        #expect(reads.count == 1)
+    }
+
+    @Test func aTransientCLIFailureDoesNotFailTheRefresh() async throws {
+        let fake = FakeGitHub(prs: (0..<250).map { pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 60)) })
+        let clock = TestUptime()
+        let reads = Counter()
+        let token = "tok-\(UUID().uuidString)"
+        let client = clientReading([token, nil], clock: clock, reads: reads) { _, body in try ok(fake, body) }
+        _ = try await client.fetchSnapshot(at: now, calendar: utc)
+        clock.advance(.seconds(15 * 60))
+        // The CLI fails on this refresh's read, but the login is fine.
+        let snapshot = try await client.fetchSnapshot(at: now, calendar: utc)
+        #expect(snapshot.count(for: .opened) == 250)
+        #expect(reads.count == 2)
+    }
+
+    @Test func aRejectedTokenFailsTheRefreshAndIsReadAgainNextTime() async throws {
+        let fake = FakeGitHub(prs: [pr(1, createdAt: monthStart)])
+        let clock = TestUptime()
+        let reads = Counter()
+        let stale = "tok-\(UUID().uuidString)", fresh = "tok-\(UUID().uuidString)"
+        let client = clientReading([stale, fresh], clock: clock, reads: reads) { token, body in
+            token == stale ? (401, [:], Data()) : try ok(fake, body)
+        }
+        #expect(await failure(of: client) as? GitHubError == .unauthorized)
+        // No clock movement: the 401 alone must force the re-read.
+        let snapshot = try await client.fetchSnapshot(at: now, calendar: utc)
+        #expect(snapshot.count(for: .opened) == 1)
     }
 
     @Test func aBriefServerErrorDoesNotRestartTheFetch() async throws {

@@ -8,7 +8,7 @@ struct PRTallyApp: App {
 
     init() {
         let client = GitHubClient(tokens: TokenProvider(override: { KeychainToken.standard.read() }))
-        let store = TallyStore { try await client.fetchSnapshot() }
+        let store = TallyStore(cache: .standard) { try await client.fetchSnapshot() }
         store.start()
         _store = State(initialValue: store)
     }

@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import Testing
 import TallyCore
 @testable import TallyUI
@@ -54,6 +55,29 @@ private func freshDefaults() -> UserDefaults {
     defaults.removePersistentDomain(forName: name)
     return defaults
 }
+
+private func freshCache() -> (cache: SnapshotCache, url: URL) {
+    let url = FileManager.default.temporaryDirectory.appending(path: "PRTallyTests/\(UUID().uuidString)/snapshot.json")
+    return (SnapshotCache(url: url), url)
+}
+
+/// Holds a fetch open until the test lets it finish.
+private actor Gate {
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var open = false
+    private(set) var started = 0
+    func pass() async {
+        started += 1
+        if !open { await withCheckedContinuation { waiters.append($0) } }
+    }
+    func release() {
+        open = true
+        waiters.forEach { $0.resume() }
+        waiters = []
+    }
+}
+
+private let october31 = Calendar.current.date(from: DateComponents(year: 2026, month: 10, day: 31, hour: 18))!
 
 @MainActor
 @Suite struct TallyStoreTests {
@@ -174,4 +198,129 @@ private func freshDefaults() -> UserDefaults {
         await store.refreshIfStale(now: now.addingTimeInterval(61))
         #expect(await script.calls == 2)
     }
+
+    @Test func lastGoodNumbersSurviveARestartWithNoNetwork() async {
+        let (cache, _) = freshCache()
+        let now = Date()
+        let pr = PullRequest(
+            id: "a", title: "Fix it", url: URL(string: "https://github.com/me/app/pull/1")!, createdAt: now,
+            mergedAt: now, repository: .init(nameWithOwner: "me/app")
+        )
+        let original = MonthSnapshot(
+            login: "me", window: MonthWindow(containing: now), opened: [pr, pr], merged: [pr], totalContributions: 9,
+            fetchedAt: now
+        )
+        let first = TallyStore(defaults: freshDefaults(), cache: cache) { original }
+        await first.refresh()
+
+        let restarted = TallyStore(defaults: freshDefaults(), cache: cache) { throw Offline() }
+        #expect(restarted.menuBarTitle(at: now) == "2")
+        #expect(restarted.pace(at: now)?.count == 2)
+        await restarted.refresh()
+        #expect(restarted.errorMessage == "Offline")
+        let restored = restarted.snapshot
+        #expect(restored?.login == "me")
+        #expect(restored?.opened == original.opened)
+        #expect(restored?.merged == original.merged)
+        #expect(restored?.totalContributions == 9)
+        #expect(restored?.fetchedAt == now)
+        #expect(restored?.window.start == original.window.start)
+        #expect(restored?.window.end == original.window.end)
+    }
+
+    @Test func failedRefreshLeavesTheSavedNumbersAlone() async {
+        let (cache, _) = freshCache()
+        let script = Script([.success(snapshot(opened: 5)), .failure(Offline())])
+        let store = TallyStore(defaults: freshDefaults(), cache: cache) { try await script.next() }
+        await store.refresh()
+        await store.refresh()
+        #expect(cache.load()?.opened.count == 5)
+    }
+
+    @Test func unreadableCacheStartsEmptyAndRecovers() async throws {
+        let (cache, url) = freshCache()
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("not json".utf8).write(to: url)
+        let store = TallyStore(defaults: freshDefaults(), cache: cache) { snapshot(opened: 3) }
+        #expect(store.snapshot == nil)
+        await store.refresh()
+        #expect(cache.load()?.opened.count == 3)
+    }
+
+    @Test func savedNumbersAreReadableOnlyByThisUser() throws {
+        let (cache, url) = freshCache()
+        cache.save(snapshot(opened: 1))
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        #expect(attributes[.posixPermissions] as? Int == 0o600)
+    }
+
+    @Test func lastMonthsNumbersAreNotPassedOffAsThisMonths() async {
+        let now = november(1)
+        let store = TallyStore(defaults: freshDefaults()) { snapshot(opened: 842, at: october31) }
+        await store.refresh()
+        #expect(store.snapshot != nil)
+        #expect(store.currentSnapshot(at: now) == nil)
+        #expect(store.pace(at: now) == nil)
+        #expect(store.menuBarTitle(at: now) == "–")
+        #expect(!store.menuBarBeatsPace(at: now))
+        #expect(store.lastMonthSummary(at: now) == "Last count for October: 842 PRs opened, as of Oct 31.")
+
+        #expect(store.currentSnapshot(at: october31) != nil)
+        #expect(store.lastMonthSummary(at: october31) == nil)
+    }
+
+    @Test func updatedTextAddsTheDateOnceItIsNoLongerToday() async {
+        let store = TallyStore(defaults: freshDefaults()) { snapshot(opened: 1, at: october31) }
+        #expect(store.updatedText(at: october31) == nil)
+        await store.refresh()
+        let time = october31.formatted(date: .omitted, time: .shortened)
+        #expect(store.updatedText(at: october31) == "Updated \(time)")
+        let nextDay = store.updatedText(at: october31.addingTimeInterval(86_400))
+        #expect(nextDay?.hasPrefix("Updated Oct 31") == true)
+    }
+
+    @Test func dayChangeRedrawsTheMenuBarEvenWhenTheRefreshFails() async {
+        let store = TallyStore(defaults: freshDefaults()) { throw Offline() }
+        let redrawn = Redraw()
+        withObservationTracking {
+            _ = store.menuBarTitle()
+        } onChange: {
+            redrawn.fired = true
+        }
+        await store.calendarDayChanged()
+        #expect(redrawn.fired)
+    }
+
+    @Test func dayChangeNotificationRefreshes() async throws {
+        let script = Script([.success(snapshot(opened: 1))])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        store.start()
+        while await script.calls < 1 { try await Task.sleep(for: .milliseconds(10)) }
+        // The watcher subscribes on its own task, so keep posting until it hears one.
+        for _ in 0..<200 where await script.calls < 2 {
+            NotificationCenter.default.post(name: .NSCalendarDayChanged, object: nil)
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await script.calls >= 2)
+    }
+
+    @Test func fetchThatSpansMidnightIsFollowedByAFreshOne() async throws {
+        let gate = Gate()
+        let script = Script([.success(snapshot(opened: 842, at: october31)), .success(snapshot(opened: 2))])
+        let store = TallyStore(defaults: freshDefaults()) {
+            await gate.pass()
+            return try await script.next()
+        }
+        let inFlight = Task { await store.refresh() }
+        while await gate.started < 1 { try await Task.sleep(for: .milliseconds(5)) }
+        await store.calendarDayChanged()
+        await gate.release()
+        await inFlight.value
+        #expect(await script.calls == 2)
+        #expect(store.currentSnapshot()?.opened.count == 2)
+    }
+}
+
+private final class Redraw: @unchecked Sendable {
+    var fired = false
 }

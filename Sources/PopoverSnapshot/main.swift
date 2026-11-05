@@ -3,7 +3,7 @@ import SwiftUI
 import TallyCore
 import TallyUI
 
-// Usage: swift run PopoverSnapshot <output.png> [light|dark|menubar]
+// Usage: swift run PopoverSnapshot <output.png> [light|dark|menubar|rollover]
 @MainActor
 func write(_ view: some View, to path: String) throws {
     let renderer = ImageRenderer(content: view)
@@ -60,11 +60,41 @@ func renderMenuBar(to path: String) throws {
     try write(VStack(spacing: 0) { bar(Color(white: 0.93), .black); bar(Color(white: 0.13), .white) }, to: path)
 }
 
+private struct Offline: LocalizedError {
+    var errorDescription: String? { "The Internet connection appears to be offline." }
+}
+
+/// A relaunch in a new month with only last month's numbers saved and GitHub out of reach, using no network.
+@MainActor
+func renderRollover(to path: String) async throws {
+    let lastMonth = MonthWindow(containing: Date()).start.addingTimeInterval(-86_400)
+    let prs = (0..<842).map {
+        PullRequest(
+            id: "\($0)", title: "", url: URL(string: "https://github.com")!,
+            createdAt: lastMonth.addingTimeInterval(TimeInterval(-3_000 * $0)), mergedAt: nil,
+            repository: .init(nameWithOwner: "me/app")
+        )
+    }
+    let snapshot = MonthSnapshot(
+        login: "me", window: MonthWindow(containing: lastMonth), opened: prs, merged: [], totalContributions: 0,
+        fetchedAt: lastMonth
+    )
+    let cache = SnapshotCache(url: FileManager.default.temporaryDirectory.appending(path: "\(UUID().uuidString).json"))
+    cache.save(snapshot)
+    let store = TallyStore(cache: cache) { throw Offline() }
+    await store.refresh()
+    let view = PopoverView(store: store).background(Color(nsColor: .windowBackgroundColor))
+    try write(view, to: path)
+    print("menu bar: \(store.menuBarTitle()) | \(store.menuBarAccessibilityLabel)")
+}
+
 let arguments = CommandLine.arguments
 let path = arguments.count > 1 ? arguments[1] : "popover.png"
 let mode = arguments.count > 2 ? arguments[2] : "light"
 if mode == "menubar" {
     try renderMenuBar(to: path)
+} else if mode == "rollover" {
+    try await renderRollover(to: path)
 } else {
     try await renderPopover(to: path, scheme: mode == "dark" ? .dark : .light)
 }

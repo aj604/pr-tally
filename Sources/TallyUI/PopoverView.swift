@@ -14,12 +14,18 @@ public struct PopoverView: View {
             header
             if showingSettings {
                 SettingsView(store: store)
-            } else if let snapshot = store.snapshot, let pace = store.pace() {
+            } else if let snapshot = store.currentSnapshot(), let pace = store.pace() {
                 progress(pace, today: snapshot.todayCount(for: store.metric, at: Date()))
                 stats(snapshot: snapshot, pace: pace)
                 Divider()
                 MonthCharts(snapshot: snapshot, metric: store.metric, goal: store.goal, now: Date())
                 TopRepositories(repositories: snapshot.topRepositories(for: store.metric))
+            } else if let summary = store.lastMonthSummary() {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Waiting for \(Date().formatted(.dateTime.month(.wide)))'s numbers.").font(.callout)
+                    Text(summary).font(.caption).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             } else if store.errorMessage == nil {
                 ProgressView("Counting your PRs…")
                     .controlSize(.small)
@@ -49,7 +55,7 @@ public struct PopoverView: View {
     }
 
     private var monthTitle: String {
-        (store.snapshot?.window.start ?? Date()).formatted(.dateTime.month(.wide).year())
+        (store.currentSnapshot()?.window.start ?? Date()).formatted(.dateTime.month(.wide).year())
     }
 
     private func progress(_ pace: Pace, today: Int) -> some View {
@@ -98,8 +104,8 @@ public struct PopoverView: View {
 
     private var footer: some View {
         HStack(spacing: 12) {
-            if let fetchedAt = store.snapshot?.fetchedAt {
-                Text("Updated \(fetchedAt.formatted(date: .omitted, time: .shortened))")
+            if let updated = store.updatedText() {
+                Text(updated)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

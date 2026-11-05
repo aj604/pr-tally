@@ -8,6 +8,7 @@ import TallyCore
 public final class TallyStore {
     public typealias Fetch = @Sendable () async throws -> MonthSnapshot
 
+    /// The last good numbers, which can be from a month that has since ended. See `currentSnapshot(at:)`.
     public private(set) var snapshot: MonthSnapshot?
     public private(set) var errorMessage: String?
     public private(set) var isRefreshing = false
@@ -35,12 +36,17 @@ public final class TallyStore {
 
     private let fetch: Fetch
     private let defaults: UserDefaults
+    private let cache: SnapshotCache?
     private var schedule: Task<Void, Never>?
-    private var watchingWakes = false
+    private var watchingSystem = false
+    /// Read by everything that depends on today's date, so it redraws at midnight even if the refresh then fails.
+    private var dayChanges = 0
 
-    public init(defaults: UserDefaults = .standard, fetch: @escaping Fetch) {
+    public init(defaults: UserDefaults = .standard, cache: SnapshotCache? = nil, fetch: @escaping Fetch) {
         self.fetch = fetch
         self.defaults = defaults
+        self.cache = cache
+        snapshot = cache?.load()
         let savedGoal = defaults.integer(forKey: Keys.goal)
         goal = savedGoal > 0 ? savedGoal : 1000
         metric = defaults.string(forKey: Keys.metric).flatMap(PRMetric.init(rawValue:)) ?? .opened
@@ -48,21 +54,46 @@ public final class TallyStore {
         refreshMinutes = savedMinutes > 0 ? savedMinutes : 15
     }
 
-    public var count: Int? { snapshot?.count(for: metric) }
+    public var count: Int? { currentSnapshot()?.count(for: metric) }
+
+    /// The last good numbers, as long as they're for the month containing `now`.
+    public func currentSnapshot(at now: Date = Date()) -> MonthSnapshot? {
+        _ = dayChanges
+        return snapshot.flatMap { $0.window.contains(now) ? $0 : nil }
+    }
 
     public func pace(at now: Date = Date()) -> Pace? {
-        guard let snapshot, let count else { return nil }
-        return Pace(goal: goal, count: count, window: snapshot.window, at: now)
+        guard let snapshot = currentSnapshot(at: now) else { return nil }
+        return Pace(goal: goal, count: snapshot.count(for: metric), window: snapshot.window, at: now)
+    }
+
+    /// Where an ended month last stood, for when this month's numbers haven't arrived yet.
+    public func lastMonthSummary(at now: Date = Date()) -> String? {
+        guard currentSnapshot(at: now) == nil, let snapshot else { return nil }
+        let month = snapshot.window.start.formatted(.dateTime.month(.wide))
+        let asOf = snapshot.fetchedAt.formatted(.dateTime.month(.abbreviated).day())
+        return "Last count for \(month): \(snapshot.count(for: metric).formatted()) \(metric.noun), as of \(asOf)."
+    }
+
+    /// When the numbers were fetched. Restored numbers can be days old, so the date appears once it isn't today.
+    public func updatedText(at now: Date = Date()) -> String? {
+        _ = dayChanges
+        guard let snapshot else { return nil }
+        let fetchedToday = snapshot.window.calendar.isDate(snapshot.fetchedAt, inSameDayAs: now)
+        let time = fetchedToday
+            ? snapshot.fetchedAt.formatted(date: .omitted, time: .shortened)
+            : snapshot.fetchedAt.formatted(.dateTime.month(.abbreviated).day().hour().minute())
+        return "Updated \(time)"
     }
 
     /// Today's count, shown beside the menu bar ring.
     public func menuBarTitle(at now: Date = Date()) -> String {
-        snapshot.map { $0.todayCount(for: metric, at: now).formatted() } ?? "–"
+        currentSnapshot(at: now).map { $0.todayCount(for: metric, at: now).formatted() } ?? "–"
     }
 
     /// Whether today's count has passed the daily quota, which turns the menu bar number green.
     public func menuBarBeatsPace(at now: Date = Date()) -> Bool {
-        guard let snapshot, let pace = pace(at: now) else { return false }
+        guard let snapshot = currentSnapshot(at: now), let pace = pace(at: now) else { return false }
         return pace.beatsDailyQuota(today: snapshot.todayCount(for: metric, at: now))
     }
 
@@ -78,13 +109,24 @@ public final class TallyStore {
     public func refresh() async {
         guard !isRefreshing else { return }
         isRefreshing = true
-        defer { isRefreshing = false }
+        let dayChangesAtStart = dayChanges
         do {
-            snapshot = try await fetch()
+            let fetched = try await fetch()
+            snapshot = fetched
             errorMessage = nil
+            cache?.save(fetched)
         } catch {
             errorMessage = error.localizedDescription
         }
+        isRefreshing = false
+        // A fetch that spanned midnight may have come back with the month that just ended.
+        if dayChanges != dayChangesAtStart { await refresh() }
+    }
+
+    /// Today's numbers and possibly the month just changed, whether or not GitHub can be reached.
+    func calendarDayChanged() async {
+        dayChanges += 1
+        await refresh()
     }
 
     /// Refreshes when opened, unless the numbers are under a minute old.
@@ -93,16 +135,23 @@ public final class TallyStore {
         await refresh()
     }
 
-    /// Begins refreshing on a schedule and after the Mac wakes. Safe to call more than once.
+    /// Begins refreshing on a schedule, after the Mac wakes, and when the day changes. Safe to call more than once.
     public func start() {
         if schedule == nil { startSchedule() }
-        guard !watchingWakes else { return }
-        watchingWakes = true
+        guard !watchingSystem else { return }
+        watchingSystem = true
         Task { [weak self] in
             let wakes = NSWorkspace.shared.notificationCenter.notifications(named: NSWorkspace.didWakeNotification)
             for await _ in wakes.map({ _ in () }) {
                 try? await Task.sleep(for: .seconds(5))
                 await self?.refresh()
+            }
+        }
+        Task { [weak self] in
+            // Posted at midnight, or on wake if the Mac slept through it.
+            let days = NotificationCenter.default.notifications(named: .NSCalendarDayChanged)
+            for await _ in days.map({ _ in () }) {
+                await self?.calendarDayChanged()
             }
         }
     }

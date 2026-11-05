@@ -12,9 +12,9 @@ private func date(_ month: Int, _ day: Int, hour: Int = 0) -> Date {
     newYork.date(from: DateComponents(year: 2026, month: month, day: day, hour: hour))!
 }
 
-private func pullRequest(opened: Date, merged: Date?) -> PullRequest {
+private func pullRequest(id: String = UUID().uuidString, opened: Date, merged: Date?) -> PullRequest {
     PullRequest(
-        id: UUID().uuidString, title: "A change", url: URL(string: "https://github.com/a/b/pull/1")!,
+        id: id, title: "A change", url: URL(string: "https://github.com/a/b/pull/1")!,
         createdAt: opened, mergedAt: merged, repository: .init(nameWithOwner: "a/b")
     )
 }
@@ -30,7 +30,8 @@ private func funnel(opened: [PullRequest], merged: [PullRequest]) -> MergeFunnel
     @Test func splitsWhatWasOpenedThisMonthByWhetherItMerged() {
         let landed = pullRequest(opened: date(11, 2), merged: date(11, 3))
         let waiting = pullRequest(opened: date(11, 2), merged: nil)
-        let result = funnel(opened: [landed, waiting, waiting], merged: [landed])
+        let alsoWaiting = pullRequest(opened: date(11, 2), merged: nil)
+        let result = funnel(opened: [landed, waiting, alsoWaiting], merged: [landed])
         #expect(result.opened == 3)
         #expect(result.openedAndMerged == 1)
         #expect(result.notMerged == 2)
@@ -39,8 +40,9 @@ private func funnel(opened: [PullRequest], merged: [PullRequest]) -> MergeFunnel
 
     @Test func mergesOfOlderPRsAreCarriedInAndStayOutOfTheRate() {
         let older = pullRequest(opened: date(10, 20), merged: date(11, 2))
+        let alsoOlder = pullRequest(opened: date(10, 21), merged: date(11, 2))
         let landed = pullRequest(opened: date(11, 2), merged: date(11, 3))
-        let result = funnel(opened: [landed], merged: [older, older, landed])
+        let result = funnel(opened: [landed], merged: [older, alsoOlder, landed])
         #expect(result.carriedIn == 2)
         #expect(result.openedAndMerged == 1)
         #expect(result.mergeRate == 1)
@@ -81,5 +83,66 @@ private func funnel(opened: [PullRequest], merged: [PullRequest]) -> MergeFunnel
         let empty = funnel(opened: [], merged: [])
         #expect(empty.medianTimeToMerge == nil)
         #expect(empty.isEmpty)
+    }
+
+    // The two lists come from separate searches, so they can disagree about a PR that merged between them.
+
+    @Test func aMergedCopyWinsOverAStaleOpenedCopyOfTheSamePR() {
+        let stale = pullRequest(id: "same", opened: date(11, 2, hour: 1), merged: nil)
+        let fresh = pullRequest(id: "same", opened: date(11, 2, hour: 1), merged: date(11, 2, hour: 2))
+        let result = funnel(opened: [stale], merged: [fresh])
+        #expect(result.opened == 1)
+        #expect(result.openedAndMerged == 1)
+        #expect(result.notMerged == 0)
+        #expect(result.medianTimeToMerge == TimeInterval(3600))
+    }
+
+    @Test func aThisMonthMergeMissingFromOpenedStillCountsAsOpened() {
+        let landed = pullRequest(opened: date(11, 2, hour: 1), merged: date(11, 2, hour: 2))
+        let result = funnel(opened: [], merged: [landed])
+        #expect(result.opened == 1)
+        #expect(result.openedAndMerged == 1)
+        #expect(result.carriedIn == 0)
+        #expect(result.medianTimeToMerge == TimeInterval(3600))
+    }
+
+    @Test func aThisMonthMergeMissingFromMergedStillCounts() {
+        let landed = pullRequest(opened: date(11, 2, hour: 1), merged: date(11, 2, hour: 2))
+        let result = funnel(opened: [landed], merged: [])
+        #expect(result.opened == 1)
+        #expect(result.openedAndMerged == 1)
+        #expect(result.medianTimeToMerge == TimeInterval(3600))
+    }
+
+    @Test func everyFigureCoversTheSameMergesWhenTheListsDisagree() {
+        let landed = pullRequest(opened: date(11, 2, hour: 1), merged: date(11, 2, hour: 2))
+        let older = pullRequest(opened: date(10, 1), merged: date(11, 2))
+        let result = funnel(opened: [landed], merged: [older])
+        #expect(result.openedAndMerged + result.carriedIn == 2)
+        #expect(result.openedAndMerged == 1)
+        #expect(result.carriedIn == 1)
+        #expect(result.medianTimeToMerge == (TimeInterval(3600) + date(11, 2).timeIntervalSince(date(10, 1))) / 2)
+    }
+
+    @Test func aPRInBothListsOrRepeatedInOneCountsOnce() {
+        let landed = pullRequest(opened: date(11, 2, hour: 1), merged: date(11, 2, hour: 2))
+        let waiting = pullRequest(opened: date(11, 2), merged: nil)
+        let older = pullRequest(opened: date(10, 1), merged: date(11, 2))
+        let result = funnel(opened: [landed, landed, waiting, waiting], merged: [landed, landed, older, older])
+        #expect(result.opened == 2)
+        #expect(result.openedAndMerged == 1)
+        #expect(result.carriedIn == 1)
+        #expect(result.medianTimeToMerge == (TimeInterval(3600) + date(11, 2).timeIntervalSince(date(10, 1))) / 2)
+    }
+
+    @Test func aMergeOutsideTheMonthIsNotAMergeThisMonth() {
+        let mergedLastMonth = pullRequest(opened: date(10, 1), merged: date(10, 2))
+        let mergedNextMonth = pullRequest(opened: date(11, 2), merged: date(12, 1))
+        let result = funnel(opened: [mergedNextMonth], merged: [mergedLastMonth])
+        #expect(result.opened == 1)
+        #expect(result.openedAndMerged == 0)
+        #expect(result.notMerged == 1)
+        #expect(result.carriedIn == 0)
+        #expect(result.medianTimeToMerge == nil)
     }
 }

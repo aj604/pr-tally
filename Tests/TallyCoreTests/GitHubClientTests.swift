@@ -161,6 +161,52 @@ private func client(_ fake: FakeGitHub) -> GitHubClient {
         #expect(await provider.token() == nil)
     }
 
+    private func provider(cli: Counter, tokens: [String?], clock: TestClock) -> TokenProvider {
+        TokenProvider(
+            override: { nil },
+            cli: { tokens[min(cli.next(), tokens.count) - 1] },
+            lifetime: 60,
+            now: { clock.now }
+        )
+    }
+
+    @Test func reusesTheCLITokenWithinItsLifetime() async {
+        let reads = Counter()
+        let clock = TestClock(Date(timeIntervalSince1970: 0))
+        let provider = provider(cli: reads, tokens: ["first", "second"], clock: clock)
+        #expect(await provider.token() == "first")
+        clock.now = Date(timeIntervalSince1970: 59)
+        #expect(await provider.token() == "first")
+        #expect(reads.count == 1)
+    }
+
+    @Test func picksUpAnotherGitHubAccountOnceTheLifetimeEnds() async {
+        let reads = Counter()
+        let clock = TestClock(Date(timeIntervalSince1970: 0))
+        let provider = provider(cli: reads, tokens: ["work", "personal"], clock: clock)
+        #expect(await provider.token() == "work")
+        clock.now = Date(timeIntervalSince1970: 60)
+        #expect(await provider.token() == "personal")
+    }
+
+    @Test func dropsTheCLITokenAfterLogout() async {
+        let reads = Counter()
+        let clock = TestClock(Date(timeIntervalSince1970: 0))
+        let provider = provider(cli: reads, tokens: ["work", nil], clock: clock)
+        #expect(await provider.token() == "work")
+        clock.now = Date(timeIntervalSince1970: 120)
+        #expect(await provider.token() == nil)
+    }
+
+    @Test func invalidatingForcesAnImmediateReread() async {
+        let reads = Counter()
+        let clock = TestClock(Date(timeIntervalSince1970: 0))
+        let provider = provider(cli: reads, tokens: ["stale", "fresh"], clock: clock)
+        #expect(await provider.token() == "stale")
+        await provider.invalidate()
+        #expect(await provider.token() == "fresh")
+    }
+
     @Test func runReturnsTrimmedOutputAndHandlesFailure() {
         #expect(GitHubCLI.run("/bin/echo", arguments: ["hi"]) == "hi")
         #expect(GitHubCLI.run("/usr/bin/false", arguments: []) == nil)

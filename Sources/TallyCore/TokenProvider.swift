@@ -2,23 +2,42 @@ import Foundation
 
 /// Finds a GitHub token: a saved override first, then the `gh` CLI's login.
 public actor TokenProvider {
+    /// How long a token read from the CLI is reused. Long enough to cover a refresh's pages,
+    /// short enough that `gh auth switch` takes effect by the next refresh.
+    static let cliLifetime: TimeInterval = 60
+
     private let override: @Sendable () -> String?
     private let cli: @Sendable () -> String?
-    private var cached: String?
+    private let lifetime: TimeInterval
+    private let now: @Sendable () -> Date
+    private var cached: (token: String, readAt: Date)?
 
     public init(
         override: @escaping @Sendable () -> String? = { nil },
         cli: @escaping @Sendable () -> String? = { GitHubCLI.authToken() }
     ) {
+        self.init(override: override, cli: cli, lifetime: Self.cliLifetime, now: { Date() })
+    }
+
+    init(
+        override: @escaping @Sendable () -> String?,
+        cli: @escaping @Sendable () -> String?,
+        lifetime: TimeInterval,
+        now: @escaping @Sendable () -> Date
+    ) {
         self.override = override
         self.cli = cli
+        self.lifetime = lifetime
+        self.now = now
     }
 
     public func token() -> String? {
         if let saved = override(), !saved.isEmpty { return saved }
-        if let cached { return cached }
-        cached = cli()
-        return cached
+        let current = now()
+        if let cached, current.timeIntervalSince(cached.readAt) < lifetime { return cached.token }
+        // After `gh auth logout` the old token must not linger, so a failed read clears it.
+        cached = cli().map { ($0, current) }
+        return cached?.token
     }
 
     /// Forgets the CLI token so the next request reads it again.

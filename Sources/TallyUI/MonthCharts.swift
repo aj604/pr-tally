@@ -19,6 +19,11 @@ struct MonthCharts: View {
     private var dayCount: Int { snapshot.window.dayCount }
     private var daily: [Int] { snapshot.dailyCounts(for: metric) }
     private var cumulative: [Int] { snapshot.cumulativeCounts(for: metric, through: now) }
+    private var projection: MonthProjection? { snapshot.projection(for: metric, at: now) }
+    /// The plot makes room for a projection past the goal, but not so much that a lumpy early month flattens the line.
+    private var yMax: Int {
+        max(projection?.ceiling(goal: goal) ?? goal, cumulative.last ?? 0, 1)
+    }
     private var xDomain: ClosedRange<Double> { 0.5...(Double(dayCount) + 0.5) }
 
     var body: some View {
@@ -30,6 +35,10 @@ struct MonthCharts: View {
                     LegendKey(label: "You", color: .accentColor, dashed: false)
                     LegendKey(label: "Steady pace", color: Self.neutral, dashed: true)
                 }
+                if let projection {
+                    Text("Likely finish: \(projection.low.formatted())–\(projection.high.formatted())")
+                        .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                }
                 runningTotal.frame(height: 96)
             }
             VStack(alignment: .leading, spacing: 8) {
@@ -40,6 +49,7 @@ struct MonthCharts: View {
                 }
                 dailyBars.frame(height: 62)
             }
+            MergeFunnelSummary(funnel: snapshot.mergeFunnel)
         }
     }
 
@@ -68,6 +78,7 @@ struct MonthCharts: View {
                     .foregroundStyle(Color.accentColor)
                     .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
             }
+            projectionRange
             if let last = cumulative.last {
                 PointMark(x: .value("Day", Double(cumulative.count)), y: .value("Total", last))
                     .foregroundStyle(Color.accentColor)
@@ -76,7 +87,7 @@ struct MonthCharts: View {
             hoverRule
         }
         .chartXScale(domain: xDomain)
-        .chartYScale(domain: 0...max(goal, cumulative.last ?? 0, 1))
+        .chartYScale(domain: 0...yMax)
         .chartXAxis(.hidden)
         .chartYAxis {
             AxisMarks(values: [0, goal / 2, goal]) { value in
@@ -85,7 +96,35 @@ struct MonthCharts: View {
             }
         }
         .hoverSelection($hoveredDay, dayCount: dayCount)
-        .accessibilityLabel("Running total of \(cumulative.last ?? 0) against a steady pace to \(goal)")
+        .accessibilityLabel(
+            "Running total of \(cumulative.last ?? 0) against a steady pace to \(goal)"
+                + (projection.map { ". Likely finish \($0.low) to \($0.high)" } ?? "")
+        )
+    }
+
+    /// A cone from today's total to the likely month-end range, around the line the current rate follows.
+    @ChartContentBuilder private var projectionRange: some ChartContent {
+        if let projection, let last = cumulative.last {
+            let steps = 12
+            let startX = Double(cumulative.count)
+            let endX = Double(dayCount) + 0.5
+            ForEach(0...steps, id: \.self) { step in
+                let progress = Double(step) / Double(steps)
+                let band = projection.band(at: progress, within: yMax)
+                AreaMark(
+                    x: .value("Day", startX + (endX - startX) * progress),
+                    yStart: .value("Low", band.lowerBound), yEnd: .value("High", band.upperBound),
+                    series: .value("Series", "Range")
+                )
+                .foregroundStyle(Color.accentColor.opacity(0.15))
+            }
+            LineMark(x: .value("Day", startX), y: .value("Projected", last), series: .value("Series", "Projected"))
+                .foregroundStyle(Color.accentColor.opacity(0.6))
+                .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [3, 3]))
+            LineMark(x: .value("Day", endX), y: .value("Projected", min(projection.expected, yMax)), series: .value("Series", "Projected"))
+                .foregroundStyle(Color.accentColor.opacity(0.6))
+                .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [3, 3]))
+        }
     }
 
     private var dailyBars: some View {
@@ -168,6 +207,60 @@ private struct LegendKey: View {
             .frame(width: 12, height: 2)
             Text(label).font(.caption).foregroundStyle(.secondary)
         }
+    }
+}
+
+/// How much of what was opened this month has merged, kept apart from merges of older PRs.
+private struct MergeFunnelSummary: View {
+    let funnel: MergeFunnel
+
+    var body: some View {
+        if !funnel.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Opened this month").font(.caption.weight(.medium))
+                    Spacer()
+                    Text(funnel.opened > 0 ? "\(funnel.openedAndMerged.formatted()) of \(funnel.opened.formatted()) merged" : "None yet")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                if let rate = funnel.mergeRate {
+                    GeometryReader { geometry in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(.quaternary)
+                            Capsule()
+                                .fill(Color.accentColor)
+                                .frame(width: rate > 0 ? max(geometry.size.width * rate, 4) : 0)
+                        }
+                    }
+                    .frame(height: 4)
+                    .help("\(funnel.notMerged.formatted()) not merged, either still open or closed")
+                }
+                if let detail {
+                    Text(detail).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                }
+            }
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    private var detail: String? {
+        var parts: [String] = []
+        if funnel.carriedIn > 0 {
+            parts.append("\(funnel.carriedIn.formatted()) older \(funnel.carriedIn == 1 ? "PR" : "PRs") also merged")
+        }
+        if let median = funnel.medianTimeToMerge {
+            parts.append("median merge \(Self.duration(median))")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private static func duration(_ seconds: TimeInterval) -> String {
+        guard seconds >= 60 else { return "under 1m" }
+        return Duration.seconds(seconds).formatted(
+            .units(allowed: [.days, .hours, .minutes], width: .narrow, maximumUnitCount: 1)
+        )
     }
 }
 

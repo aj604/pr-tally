@@ -21,16 +21,21 @@ public struct Pace: Sendable, Equatable {
 
     public init(goal: Int, count: Int, window: MonthWindow, at now: Date) {
         let elapsed = window.elapsedFraction(at: now)
-        // A floor of one day keeps the first hours of a month from projecting absurd totals.
-        let oneDay = 1 / Double(window.dayCount)
         self.goal = goal
         self.count = count
         self.expected = Int((Double(goal) * elapsed).rounded())
-        self.projected = Int((Double(count) / max(elapsed, oneDay)).rounded())
+        self.projected = Self.projectedTotal(count: count, window: window, at: now)
         self.remaining = max(goal - count, 0)
         self.daysRemaining = window.daysRemaining(at: now)
         self.neededPerDay = daysRemaining > 0 ? Double(remaining) / Double(daysRemaining) : 0
         self.dailyQuota = Double(goal) / Double(window.dayCount)
+    }
+
+    /// Month-end count if the rate so far continues.
+    static func projectedTotal(count: Int, window: MonthWindow, at now: Date) -> Int {
+        // A floor of one day keeps the first hours of a month from projecting absurd totals.
+        let oneDay = 1 / Double(window.dayCount)
+        return Int((Double(count) / max(window.elapsedFraction(at: now), oneDay)).rounded())
     }
 
     /// Whole PRs past the daily quota today, or 0 if not past it. Once the goal is hit there's no quota left to beat.

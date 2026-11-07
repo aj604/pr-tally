@@ -1021,6 +1021,30 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
         #expect(sent.milestones.count == 2)
     }
 
+    @Test func everyGoalAnnouncedThisMonthStaysAnnounced() async {
+        let sent = Sent()
+        let script = Script([
+            .success(snapshot(opened: 2, merged: 0)), .success(snapshot(opened: 3, merged: 0)),
+            .success(snapshot(opened: 3, merged: 2)), .success(snapshot(opened: 3, merged: 3)),
+            .success(snapshot(opened: 2, merged: 3)), .success(snapshot(opened: 3, merged: 3)),
+        ])
+        let store = TallyStore(defaults: freshDefaults(), notify: { sent.milestones.append($0) }) {
+            try await script.next()
+        }
+        store.goal = 3
+        await store.refresh()
+        await store.refresh()
+        store.metric = .merged
+        await store.refresh()
+        await store.refresh()
+        #expect(sent.milestones.count == 2)
+        // Back on opened, a PR dropping out and back in doesn't announce opened's goal a second time.
+        store.metric = .opened
+        await store.refresh()
+        await store.refresh()
+        #expect(sent.milestones.count == 2)
+    }
+
     @Test func lastMonthsNumbersAreNotACrossingThisMonth() async {
         let (cache, _) = freshCache()
         cache.save(snapshot(opened: 990, at: october31))

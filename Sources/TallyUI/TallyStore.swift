@@ -43,7 +43,7 @@ public final class TallyStore {
         static let metric = "metric"
         static let refreshMinutes = "refreshMinutes"
         static let notifiesOnGoal = "notifiesOnGoal"
-        /// The goal last announced, named by month, metric and number. See `announceGoal(from:to:)`.
+        /// The goals announced this month, each named by month, metric and number. See `announceGoal(from:to:)`.
         static let goalAnnounced = "goalAnnounced"
     }
 
@@ -212,12 +212,15 @@ public final class TallyStore {
     /// Tells the user once when the goal is reached, rather than on every refresh that finds it reached. A goal
     /// raised after reaching it, or reached in the other metric, is a new one and is announced in turn.
     private func announceGoal(from previous: MonthSnapshot?, to fetched: MonthSnapshot) {
-        let announced = "\(fetched.window.monthKey) \(metric.rawValue) \(goal)"
+        let month = fetched.window.monthKey
+        let announced = "\(month) \(metric.rawValue) \(goal)"
+        // Earlier months' goals are let go as this month's are recorded.
+        let thisMonth = (defaults.stringArray(forKey: Keys.goalAnnounced) ?? []).filter { $0.hasPrefix("\(month) ") }
         guard let milestone = Milestone.goalReached(from: previous, to: fetched, metric: metric, goal: goal, at: Date()),
-            defaults.string(forKey: Keys.goalAnnounced) != announced
+            !thisMonth.contains(announced)
         else { return }
         // Recorded even with notifications off, so turning them on later doesn't announce a crossing from days ago.
-        defaults.set(announced, forKey: Keys.goalAnnounced)
+        defaults.set(thisMonth + [announced], forKey: Keys.goalAnnounced)
         if notifiesOnGoal { notify?(milestone) }
     }
 

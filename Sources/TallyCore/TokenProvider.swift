@@ -97,15 +97,15 @@ public enum GitHubCLI {
     /// Finder-launched apps get a minimal PATH, so look where package managers install `gh`.
     static func searchPaths(home: String = NSHomeDirectory(), user: String = NSUserName()) -> [String] {
         [
-            // Homebrew, Apple silicon then Intel.
-            "/opt/homebrew/bin/gh", "/usr/local/bin/gh",
+            // Homebrew, Apple silicon then Intel, and the system: the places looked before the rest were
+            // added, kept first so nobody already using `gh` gets a different one.
+            "/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh",
             // MacPorts.
             "/opt/local/bin/gh",
             // Nix: a user profile, home-manager under nix-darwin, then nix-darwin's system packages.
             "\(home)/.nix-profile/bin/gh", "/etc/profiles/per-user/\(user)/bin/gh", "/run/current-system/sw/bin/gh",
             // A release unpacked by hand, or installed by a tool that links into it.
             "\(home)/.local/bin/gh",
-            "/usr/bin/gh",
         ]
     }
 

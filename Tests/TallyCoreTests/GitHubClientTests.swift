@@ -306,11 +306,11 @@ private func client(_ fake: FakeGitHub) -> GitHubClient {
 
     @Test func looksForTheGitHubCLIWhereverAPackageManagerPutsIt() {
         let paths = GitHubCLI.searchPaths(home: "/Users/sam", user: "sam")
-        #expect(paths.first == "/opt/homebrew/bin/gh")
+        // The places looked before the rest were added, in the same order, so nobody gets a different `gh`.
+        #expect(paths.prefix(3) == ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"])
         for path in [
-            "/usr/local/bin/gh", "/opt/local/bin/gh", "/Users/sam/.nix-profile/bin/gh",
-            "/etc/profiles/per-user/sam/bin/gh", "/run/current-system/sw/bin/gh", "/Users/sam/.local/bin/gh",
-            "/usr/bin/gh",
+            "/opt/local/bin/gh", "/Users/sam/.nix-profile/bin/gh", "/etc/profiles/per-user/sam/bin/gh",
+            "/run/current-system/sw/bin/gh", "/Users/sam/.local/bin/gh",
         ] {
             #expect(paths.contains(path))
         }

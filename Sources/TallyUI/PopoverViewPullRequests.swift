@@ -83,6 +83,16 @@ extension MonthWindow {
         return calendar.date(byAdding: .day, value: day, to: start)!.formatted(style)
     }
 
+    /// A pull request's time in the list, with its date when the list spans the month, in the zone the month was
+    /// counted in, so it agrees with the day the PR is counted on.
+    func rowTime(_ date: Date, withDay: Bool) -> String {
+        var style = withDay
+            ? Date.FormatStyle.dateTime.month(.abbreviated).day().hour().minute()
+            : Date.FormatStyle(date: .omitted, time: .shortened)
+        style.timeZone = calendar.timeZone
+        return date.formatted(style)
+    }
+
     /// The month's short name, in the zone the month was counted in.
     var monthTitle: String {
         var style = Date.FormatStyle.dateTime.month(.abbreviated)
@@ -208,12 +218,7 @@ struct PullRequestList: View {
                 HStack(spacing: 4) {
                     Text(pr.repository.nameWithOwner).lineLimit(1).truncationMode(.head)
                     Spacer(minLength: 4)
-                    Text(
-                        scope != .month
-                            ? date.formatted(date: .omitted, time: .shortened)
-                            : date.formatted(.dateTime.month(.abbreviated).day().hour().minute())
-                    )
-                    .monospacedDigit()
+                    Text(snapshot.window.rowTime(date, withDay: scope == .month)).monospacedDigit()
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)

@@ -120,6 +120,25 @@ private func snapshot(_ prs: [PullRequest], now: Date) -> MonthSnapshot {
         #expect(window.dayTitle(29) != window.dayTitle(0))
     }
 
+    /// A row's time agrees with the day its PR is counted on, whatever zone the Mac is in now.
+    @Test func aRowsTimeIsInTheZoneItWasCountedIn() {
+        var kiribati = Calendar(identifier: .gregorian)
+        kiribati.timeZone = TimeZone(identifier: "Pacific/Kiritimati")!
+        let window = MonthWindow(containing: kiribati.date(from: DateComponents(year: 2026, month: 11, day: 15))!, calendar: kiribati)
+        // 23:30 on Nov 15 in UTC is 13:30 on Nov 16 in Kiritimati.
+        let date = Date(timeIntervalSince1970: 1_794_785_400)
+        func formatted(_ style: Date.FormatStyle, in zone: String) -> String {
+            var style = style
+            style.timeZone = TimeZone(identifier: zone)!
+            return date.formatted(style)
+        }
+        let month = Date.FormatStyle.dateTime.month(.abbreviated).day().hour().minute()
+        let time = Date.FormatStyle(date: .omitted, time: .shortened)
+        #expect(window.rowTime(date, withDay: true) == formatted(month, in: "Pacific/Kiritimati"))
+        #expect(window.rowTime(date, withDay: false) == formatted(time, in: "Pacific/Kiritimati"))
+        #expect(window.rowTime(date, withDay: true) != formatted(month, in: "UTC"))
+    }
+
     @Test func theFunnelListsOnlyWhatWasOpenedThisMonthAndHasntMerged() {
         let snapshot = snapshot(
             [

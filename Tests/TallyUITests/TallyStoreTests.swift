@@ -228,7 +228,7 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
     }
 
     @Test func menuBarFadesWhenARefreshFailsAnIntervalAfterTheLastNumbers() async {
-        let fetchedAt = Date().addingTimeInterval(-16 * 60)
+        let fetchedAt = Date().addingTimeInterval(-20 * 60)
         let script = Script([
             .success(snapshot(opened: 5, at: fetchedAt)), .failure(Offline()), .success(snapshot(opened: 6)),
         ])
@@ -256,9 +256,21 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
         #expect(store.menuBarIsStale)
     }
 
+    /// The schedule's own try comes just over an interval after the numbers were fetched, so one failure there
+    /// is the minute-long blip its retry is for.
+    @Test func aFailedScheduledRefreshLeavesTheMenuBarAloneForItsRetry() async {
+        let fetchedAt = Date().addingTimeInterval(-(15 * 60 + 5))
+        let script = Script([.success(snapshot(opened: 5, at: fetchedAt)), .failure(Offline())])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        await store.refresh()
+        await store.refreshIfStale()
+        #expect(await script.calls == 2)
+        #expect(!store.menuBarIsStale)
+    }
+
     @Test func waitingForTheNetworkFadesOldNumbersUntilItReturns() async {
         let script = Script([
-            .success(snapshot(opened: 5, at: Date().addingTimeInterval(-20 * 60))), .success(snapshot(opened: 6)),
+            .success(snapshot(opened: 5, at: Date().addingTimeInterval(-25 * 60))), .success(snapshot(opened: 6)),
         ])
         let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
         await store.refresh()

@@ -149,11 +149,12 @@ public final class TallyStore {
     }
 
     /// Whether the menu bar's numbers have stopped updating, which fades them: a refresh failed, or is waiting
-    /// for the network, a whole refresh interval or more after they were fetched. A failure sooner than that is
-    /// left for the next try to put right unseen.
+    /// for the network, more than two minutes after the schedule's next one was due. The scheduled try itself
+    /// always comes a whole interval after the numbers were fetched, so a failure there, and the retry a minute
+    /// later, are left to put right unseen.
     public var menuBarIsStale: Bool {
         guard let stalledAt, let fetchedAt = currentSnapshot()?.fetchedAt else { return false }
-        return stalledAt.timeIntervalSince(fetchedAt) >= Double(refreshMinutes * 60)
+        return stalledAt.timeIntervalSince(fetchedAt) >= Double(refreshMinutes * 60 + 120)
     }
 
     /// What VoiceOver reads for the menu bar item, since the image carries the numbers visually.

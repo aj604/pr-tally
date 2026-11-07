@@ -17,13 +17,13 @@ You also get one notification a month when a refresh takes you past your goal. m
 
 ## Install
 
-Requires macOS 14+, Xcode or the Swift toolchain, and the [GitHub CLI](https://cli.github.com) logged in (`gh auth login`).
+Requires macOS 14+, Xcode (or, before macOS 27, the Command Line Tools), and the [GitHub CLI](https://cli.github.com) logged in (`gh auth login`).
 
 ```sh
 ./scripts/install.sh
 ```
 
-This builds the app, copies it to `~/Applications/PR Tally.app`, and launches it. There's no Dock icon. To start it automatically, turn on **Launch at login** in settings (the gear in the popover).
+This builds the app, copies it to `~/Applications/PR Tally.app`, and launches it. If the Command Line Tools are your active developer directory, it builds with Xcode instead, since on macOS 27 the Command Line Tools can't compile SwiftUI. There's no Dock icon. To start it automatically, turn on **Launch at login** in settings (the gear in the popover).
 
 ## How it counts
 
@@ -60,6 +60,8 @@ swift run PopoverSnapshot out.png <mode>      # render or run a fixture, with no
 ```
 
 The fixture modes are `rollover` (waiting for a new month), `overview`, `drilldown` (the PR list), `menubar` (the ring's states) and `milestone`, which prints what the goal notification would say rather than writing an image.
+
+On macOS 27, `swift test` and `swift run` fail with `plugin for module 'SwiftUIMacros' not found` under the Command Line Tools. Run `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`, or prefix the command with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`.
 
 `KeychainTokenTests` adds and removes a throwaway item in your login keychain. Add `--skip KeychainTokenTests` to `swift test` to leave it out. Notifications only work from the bundled app, so they do nothing under `swift run`.
 

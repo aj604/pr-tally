@@ -114,6 +114,9 @@ private actor Gate {
     }
 }
 
+/// A network that is up and stays up, so started stores don't depend on this machine's.
+private let online = NetworkStatus { AsyncStream { $0.yield(true) } }
+
 private let october31 = Calendar.current.date(from: DateComponents(year: 2026, month: 10, day: 31, hour: 18))!
 
 /// Serialized because the notification tests post on the shared center, which every started store hears.
@@ -347,7 +350,7 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
 
     @Test func dayChangeNotificationRefreshes() async throws {
         let script = Script([.success(snapshot(opened: 1))])
-        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        let store = TallyStore(defaults: freshDefaults(), network: online) { try await script.next() }
         store.start()
         while await script.calls < 1 { try await Task.sleep(for: .milliseconds(10)) }
         // The watcher subscribes on its own task, so keep posting until it hears one.
@@ -543,7 +546,7 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
 
     @Test func timeZoneChangeRedrawsAndRefreshes() async throws {
         let script = Script([.success(snapshot(opened: 1))])
-        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        let store = TallyStore(defaults: freshDefaults(), network: online) { try await script.next() }
         store.start()
         while await script.calls < 1 { try await Task.sleep(for: .milliseconds(10)) }
         for _ in 0..<200 where await script.calls < 2 {
@@ -554,7 +557,7 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
     }
 
     @Test func timeZoneChangeRedrawsTheMenuBarEvenWhenTheRefreshFails() async throws {
-        let store = TallyStore(defaults: freshDefaults()) { throw Offline() }
+        let store = TallyStore(defaults: freshDefaults(), network: online) { throw Offline() }
         store.start()
         let redrawn = Redraw()
         withObservationTracking {
@@ -583,6 +586,101 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
         await inFlight.value
         #expect(await script.calls == 2)
         #expect(store.currentSnapshot()?.opened.count == 2)
+    }
+
+    // MARK: Network
+
+    @Test func openingThePopoverOfflineWaitsForTheNetworkInsteadOfFailing() async {
+        let script = Script([.success(snapshot(opened: 3))])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        await store.networkChanged(isOnline: false)
+        await store.refreshIfStale()
+        #expect(await script.calls == 0)
+        #expect(store.errorMessage == TallyStore.offlineMessage)
+
+        await store.networkChanged(isOnline: true)
+        #expect(await script.calls == 1)
+        #expect(store.errorMessage == nil)
+        #expect(store.count == 3)
+    }
+
+    @Test func aRefreshThatFailedIsRetriedTheMomentTheNetworkReturns() async {
+        let script = Script([.failure(Offline()), .success(snapshot(opened: 2))])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        await store.refresh()
+        #expect(store.errorMessage == "Offline")
+        await store.networkChanged(isOnline: false)
+        #expect(await script.calls == 1)
+
+        await store.networkChanged(isOnline: true)
+        #expect(await script.calls == 2)
+        #expect(store.errorMessage == nil)
+        #expect(store.count == 2)
+    }
+
+    @Test func theNetworkComingBackDoesNotRefetchNumbersNothingWaitedFor() async {
+        let script = Script([.success(snapshot(opened: 1))])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        await store.refresh()
+        await store.networkChanged(isOnline: false)
+        await store.networkChanged(isOnline: true)
+        #expect(await script.calls == 1)
+    }
+
+    /// The system re-reports a working network whenever an interface changes, which isn't the network coming back.
+    @Test func stayingOnlineDoesNotRetryAFailure() async {
+        let script = Script([.failure(Offline())])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        await store.refresh()
+        await store.networkChanged(isOnline: true)
+        await store.networkChanged(isOnline: true)
+        #expect(await script.calls == 1)
+    }
+
+    @Test func theRefreshButtonStillTriesWhileOffline() async {
+        let script = Script([.success(snapshot(opened: 4))])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        await store.networkChanged(isOnline: false)
+        await store.refresh()
+        #expect(await script.calls == 1)
+        #expect(store.count == 4)
+    }
+
+    @Test func aDayChangeWhileOfflineWaitsForTheNetwork() async {
+        let script = Script([.success(snapshot(opened: 5))])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        await store.networkChanged(isOnline: false)
+        await store.calendarDayChanged()
+        #expect(await script.calls == 0)
+        #expect(store.errorMessage == TallyStore.offlineMessage)
+
+        await store.networkChanged(isOnline: true)
+        #expect(await script.calls == 1)
+        #expect(store.count == 5)
+    }
+
+    @Test func aStartedStoreRefreshesWhenTheNetworkComesBack() async throws {
+        let (changes, network) = AsyncStream.makeStream(of: Bool.self)
+        let script = Script([.failure(Offline()), .success(snapshot(opened: 6))])
+        let store = TallyStore(defaults: freshDefaults(), network: NetworkStatus { changes }) { try await script.next() }
+        store.start()
+        while await script.calls < 1 { try await Task.sleep(for: .milliseconds(10)) }
+        network.yield(false)
+        network.yield(true)
+        // The schedule's own retry is a minute away, so only the network coming back can do this.
+        for _ in 0..<200 where await script.calls < 2 { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(await script.calls == 2)
+        #expect(store.count == 6)
+    }
+
+    @Test func changingTheIntervalDoesNotRefetchNumbersJustFetched() async throws {
+        let script = Script([.success(snapshot(opened: 1))])
+        let store = TallyStore(defaults: freshDefaults(), network: online) { try await script.next() }
+        store.start()
+        while await script.calls < 1 { try await Task.sleep(for: .milliseconds(10)) }
+        store.refreshMinutes = 5
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await script.calls == 1)
     }
 
     // MARK: Milestones

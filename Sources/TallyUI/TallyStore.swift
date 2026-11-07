@@ -51,6 +51,11 @@ public final class TallyStore {
     private let defaults: UserDefaults
     private let cache: SnapshotCache?
     private let notify: (@MainActor (Milestone) -> Void)?
+    private let network: NetworkStatus
+    /// Assumed until the system says otherwise, so a launch doesn't wait on it.
+    private var isOnline = true
+    /// Whether a refresh was due while offline, which the network coming back then makes up for.
+    private var missedRefresh = false
     private var schedule: Task<Void, Never>?
     private var watchingSystem = false
     /// Read by everything that depends on today's date, so it redraws at midnight even if the refresh then fails.
@@ -58,12 +63,13 @@ public final class TallyStore {
 
     public init(
         defaults: UserDefaults = .standard, cache: SnapshotCache? = nil,
-        notify: (@MainActor (Milestone) -> Void)? = nil, fetch: @escaping Fetch
+        notify: (@MainActor (Milestone) -> Void)? = nil, network: NetworkStatus = .system, fetch: @escaping Fetch
     ) {
         self.fetch = fetch
         self.defaults = defaults
         self.cache = cache
         self.notify = notify
+        self.network = network
         snapshot = cache?.load()
         let savedGoal = defaults.integer(forKey: Keys.goal)
         goal = savedGoal > 0 ? savedGoal : 1000
@@ -143,9 +149,12 @@ public final class TallyStore {
     }
 
     /// A failed refresh keeps the last good numbers on screen and reports the error next to them.
+    ///
+    /// Always tries, offline or not, since this is also what the refresh button asks for.
     public func refresh() async {
         guard !isRefreshing else { return }
         isRefreshing = true
+        missedRefresh = false
         let dayChangesAtStart = dayChanges
         do {
             // Runs apart from whoever asked: closing the popover cancels its `.task`, and changing the
@@ -179,7 +188,27 @@ public final class TallyStore {
         // Foundation caches the system zone, which `Calendar.current` and the formatters would otherwise keep reading.
         NSTimeZone.resetSystemTimeZone()
         dayChanges += 1
+        if isOnline {
+            await refresh()
+        } else {
+            waitForNetwork()
+        }
+    }
+
+    static let offlineMessage = "No network connection. The numbers will update when it's back."
+
+    /// Coming back online makes up for a refresh that waited or failed, at once rather than on the next tick.
+    func networkChanged(isOnline online: Bool) async {
+        let cameBack = online && !isOnline
+        isOnline = online
+        guard cameBack, missedRefresh || errorMessage != nil else { return }
         await refresh()
+    }
+
+    /// Says why the numbers aren't updating, without spending a fetch and its retries on learning it.
+    private func waitForNetwork() {
+        missedRefresh = true
+        errorMessage = Self.offlineMessage
     }
 
     /// The next opening starts at the numbers, not wherever the last one ended: Settings or the PR list
@@ -188,22 +217,30 @@ public final class TallyStore {
         screen = .summary
     }
 
-    /// Refreshes when opened, unless the numbers are under a minute old.
+    /// Refreshes when nobody pressed the button: on opening, on the schedule, after a wake. Numbers under a
+    /// minute old are left alone, so these don't stack up, and while offline it waits for the network.
     public func refreshIfStale(now: Date = Date()) async {
         if let fetchedAt = snapshot?.fetchedAt, now.timeIntervalSince(fetchedAt) < 60 { return }
+        guard isOnline else { return waitForNetwork() }
         await refresh()
     }
 
-    /// Begins refreshing on a schedule, after the Mac wakes, and when the day or time zone changes. Safe to call more than once.
+    /// Begins refreshing on a schedule, after the Mac wakes, when the network comes back, and when the day or
+    /// time zone changes. Safe to call more than once.
     public func start() {
         if schedule == nil { startSchedule() }
         guard !watchingSystem else { return }
         watchingSystem = true
+        Task { [weak self, network] in
+            for await online in network.changes() {
+                await self?.networkChanged(isOnline: online)
+            }
+        }
         Task { [weak self] in
             let wakes = NSWorkspace.shared.notificationCenter.notifications(named: NSWorkspace.didWakeNotification)
             for await _ in wakes.map({ _ in () }) {
                 try? await Task.sleep(for: .seconds(5))
-                await self?.refresh()
+                await self?.refreshIfStale()
             }
         }
         Task { [weak self] in
@@ -226,7 +263,7 @@ public final class TallyStore {
         schedule?.cancel()
         schedule = Task { [weak self] in
             while !Task.isCancelled, let self {
-                await self.refresh()
+                await self.refreshIfStale()
                 // Retry failures soon; the network is often just coming back.
                 let delay: Duration = self.errorMessage == nil ? .seconds(self.refreshMinutes * 60) : .seconds(60)
                 try? await Task.sleep(for: delay)

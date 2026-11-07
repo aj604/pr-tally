@@ -3,6 +3,8 @@ import TallyCore
 
 public struct PopoverView: View {
     @Bindable private var store: TallyStore
+    /// What the pull request list opens narrowed to, set by whatever opened it.
+    @State private var listFocus = PullRequestFocus()
 
     public init(store: TallyStore) {
         self.store = store
@@ -14,14 +16,18 @@ public struct PopoverView: View {
             if store.screen == .settings {
                 SettingsView(store: store)
             } else if store.screen == .pullRequests, let snapshot = store.currentSnapshot() {
-                PullRequestList(snapshot: snapshot, metric: store.metric, now: Date())
+                PullRequestList(snapshot: snapshot, metric: store.metric, now: Date(), focus: listFocus)
             } else if let snapshot = store.currentSnapshot(), let pace = store.pace() {
                 progress(pace, today: snapshot.todayCount(for: store.metric, at: Date()))
                 stats(snapshot: snapshot, pace: pace)
                 pullRequestsButton(snapshot)
                 Divider()
-                MonthCharts(snapshot: snapshot, metric: store.metric, goal: store.goal, now: Date())
-                TopRepositories(repositories: snapshot.topRepositories(for: store.metric))
+                MonthCharts(snapshot: snapshot, metric: store.metric, goal: store.goal, now: Date()) { day in
+                    showPullRequests(PullRequestFocus(day: day))
+                }
+                TopRepositories(repositories: snapshot.topRepositories(for: store.metric)) { repository in
+                    showPullRequests(PullRequestFocus(repository: repository))
+                }
             } else if let summary = store.lastMonthSummary() {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Waiting for \(Date().formatted(.dateTime.month(.wide)))'s numbers.").font(.callout)
@@ -45,7 +51,15 @@ public struct PopoverView: View {
         .frame(width: 320)
         .task { await store.refreshIfStale() }
         // `MenuBarExtra` keeps this view alive between openings, with its state, so the reset is explicit.
-        .onDisappear { store.popoverClosed() }
+        .onDisappear {
+            store.popoverClosed()
+            listFocus = PullRequestFocus()
+        }
+    }
+
+    private func showPullRequests(_ focus: PullRequestFocus = PullRequestFocus()) {
+        listFocus = focus
+        store.screen = .pullRequests
     }
 
     private var header: some View {
@@ -124,7 +138,7 @@ public struct PopoverView: View {
 
     private func pullRequestsButton(_ snapshot: MonthSnapshot) -> some View {
         Button {
-            store.screen = .pullRequests
+            showPullRequests()
         } label: {
             HStack {
                 Text("See the \(snapshot.count(for: store.metric).formatted()) PRs").font(.callout)

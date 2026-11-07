@@ -3,11 +3,13 @@ import SwiftUI
 import TallyCore
 
 /// Running total against a steady pace, with daily counts underneath on a shared day axis.
+/// Clicking a day with pull requests asks for them with its zero-based index.
 struct MonthCharts: View {
     let snapshot: MonthSnapshot
     let metric: PRMetric
     let goal: Int
     let now: Date
+    var selectDay: (Int) -> Void = { _ in }
 
     @State private var hoveredDay: Int?
 
@@ -57,8 +59,7 @@ struct MonthCharts: View {
         guard let hoveredDay, daily.indices.contains(hoveredDay - 1) else {
             return "Best day: \((daily.max() ?? 0).formatted())"
         }
-        let date = snapshot.window.calendar.date(byAdding: .day, value: hoveredDay - 1, to: snapshot.window.start)!
-        var text = "\(date.formatted(.dateTime.month(.abbreviated).day())): \(daily[hoveredDay - 1].formatted())"
+        var text = "\(snapshot.window.dayTitle(hoveredDay - 1)): \(daily[hoveredDay - 1].formatted())"
         if cumulative.indices.contains(hoveredDay - 1) {
             text += ", \(cumulative[hoveredDay - 1].formatted()) total"
         }
@@ -95,7 +96,7 @@ struct MonthCharts: View {
                 AxisValueLabel { yLabel(value.as(Int.self) ?? 0) }
             }
         }
-        .hoverSelection($hoveredDay, dayCount: dayCount)
+        .daySelection($hoveredDay, dayCount: dayCount, select: select)
         .accessibilityLabel(
             "Running total of \(cumulative.last ?? 0) against a steady pace to \(goal)"
                 + (projection.map { ". Likely finish \($0.low) to \($0.high)" } ?? "")
@@ -152,8 +153,14 @@ struct MonthCharts: View {
                 AxisValueLabel { yLabel(value.as(Int.self) ?? 0) }
             }
         }
-        .hoverSelection($hoveredDay, dayCount: dayCount)
+        .daySelection($hoveredDay, dayCount: dayCount, select: select)
         .accessibilityLabel("Pull requests per day. \(dailyCaption)")
+    }
+
+    /// Days with nothing counted have nothing to list.
+    private func select(_ day: Int) {
+        guard daily.indices.contains(day - 1), daily[day - 1] > 0 else { return }
+        selectDay(day - 1)
     }
 
     @ChartContentBuilder private var hoverRule: some ChartContent {
@@ -171,24 +178,29 @@ struct MonthCharts: View {
 }
 
 private extension View {
-    /// Tracks the day under the pointer.
-    func hoverSelection(_ day: Binding<Int?>, dayCount: Int) -> some View {
+    /// Tracks the day under the pointer, and passes on the one-based day clicked.
+    func daySelection(_ day: Binding<Int?>, dayCount: Int, select: @escaping (Int) -> Void) -> some View {
         chartOverlay { proxy in
             GeometryReader { geometry in
+                let dayAt = { (location: CGPoint) -> Int? in
+                    guard let plot = proxy.plotFrame, let value: Double = proxy.value(atX: location.x - geometry[plot].minX)
+                    else { return nil }
+                    return min(max(Int(value.rounded()), 1), dayCount)
+                }
                 Rectangle()
                     .fill(.clear)
                     .contentShape(Rectangle())
                     .onContinuousHover { phase in
-                        guard case .active(let location) = phase, let plot = proxy.plotFrame,
-                            let value: Double = proxy.value(atX: location.x - geometry[plot].minX)
-                        else {
+                        guard case .active(let location) = phase else {
                             day.wrappedValue = nil
                             return
                         }
-                        day.wrappedValue = min(max(Int(value.rounded()), 1), dayCount)
+                        day.wrappedValue = dayAt(location)
                     }
+                    .onTapGesture { location in dayAt(location).map(select) }
             }
         }
+        .help("Click a day to list its PRs")
     }
 }
 
@@ -264,34 +276,44 @@ private struct MergeFunnelSummary: View {
     }
 }
 
+/// Clicking a repository asks for its pull requests by name.
 struct TopRepositories: View {
     let repositories: [RepoCount]
+    var select: (String) -> Void = { _ in }
 
     var body: some View {
         if let highest = repositories.first?.count, highest > 0 {
             VStack(alignment: .leading, spacing: 5) {
                 Text("Top repos").font(.caption.weight(.medium))
                 ForEach(repositories) { repository in
-                    HStack(spacing: 8) {
-                        Text(repository.name)
-                            .font(.caption)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .frame(width: 130, alignment: .leading)
-                        GeometryReader { geometry in
-                            Capsule()
-                                .fill(Color.accentColor)
-                                .frame(width: max(geometry.size.width * Double(repository.count) / Double(highest), 4), height: 4)
-                                .frame(maxHeight: .infinity)
-                        }
-                        Text(repository.count, format: .number)
-                            .font(.caption)
-                            .monospacedDigit()
-                            .frame(minWidth: 24, alignment: .trailing)
-                    }
-                    .frame(height: 14)
+                    Button { select(repository.name) } label: { row(repository, highest: highest) }
+                        .buttonStyle(.plain)
+                        .help("List the PRs in \(repository.name)")
+                        .accessibilityLabel("\(repository.name), \(repository.count)")
                 }
             }
         }
+    }
+
+    private func row(_ repository: RepoCount, highest: Int) -> some View {
+        HStack(spacing: 8) {
+            Text(repository.name)
+                .font(.caption)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(width: 130, alignment: .leading)
+            GeometryReader { geometry in
+                Capsule()
+                    .fill(Color.accentColor)
+                    .frame(width: max(geometry.size.width * Double(repository.count) / Double(highest), 4), height: 4)
+                    .frame(maxHeight: .infinity)
+            }
+            Text(repository.count, format: .number)
+                .font(.caption)
+                .monospacedDigit()
+                .frame(minWidth: 24, alignment: .trailing)
+        }
+        .frame(height: 14)
+        .contentShape(Rectangle())
     }
 }

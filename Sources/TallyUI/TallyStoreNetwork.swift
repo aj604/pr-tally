@@ -10,10 +10,16 @@ public struct NetworkStatus: Sendable {
         self.changes = changes
     }
 
+    /// A path that comes up when something connects, such as an on-demand VPN, never reads as satisfied until
+    /// a fetch tries it, so only an unsatisfied path counts as offline.
+    static func isUsable(_ status: NWPath.Status) -> Bool {
+        status != .unsatisfied
+    }
+
     public static let system = NetworkStatus {
         AsyncStream { continuation in
             let monitor = NWPathMonitor()
-            monitor.pathUpdateHandler = { continuation.yield($0.status == .satisfied) }
+            monitor.pathUpdateHandler = { continuation.yield(isUsable($0.status)) }
             continuation.onTermination = { _ in monitor.cancel() }
             monitor.start(queue: DispatchQueue(label: "PR Tally network"))
         }

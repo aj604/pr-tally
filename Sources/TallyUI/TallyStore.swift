@@ -56,6 +56,8 @@ public final class TallyStore {
     private var isOnline = true
     /// Whether a refresh was due while offline, which the network coming back then makes up for.
     private var missedRefresh = false
+    /// Counts the network coming back, so a fetch that failed while it did is tried again.
+    private var networkReturns = 0
     private var schedule: Task<Void, Never>?
     private var watchingSystem = false
     /// Read by everything that depends on today's date, so it redraws at midnight even if the refresh then fails.
@@ -156,6 +158,7 @@ public final class TallyStore {
         isRefreshing = true
         missedRefresh = false
         let dayChangesAtStart = dayChanges
+        let networkReturnsAtStart = networkReturns
         do {
             // Runs apart from whoever asked: closing the popover cancels its `.task`, and changing the
             // interval cancels the schedule, but the numbers are still wanted either way.
@@ -169,8 +172,10 @@ public final class TallyStore {
             errorMessage = error.localizedDescription
         }
         isRefreshing = false
-        // A fetch that spanned midnight may have come back with the month that just ended.
-        if dayChanges != dayChangesAtStart { await refresh() }
+        // A fetch that spanned midnight may have come back with the month that just ended, and one that failed
+        // may have failed only because the network was still coming back.
+        let failedBeforeNetworkReturned = errorMessage != nil && isOnline && networkReturns != networkReturnsAtStart
+        if dayChanges != dayChangesAtStart || failedBeforeNetworkReturned { await refresh() }
     }
 
     /// Tells the user once per month when the goal is reached, rather than on every refresh that finds it reached.
@@ -201,6 +206,7 @@ public final class TallyStore {
     func networkChanged(isOnline online: Bool) async {
         let cameBack = online && !isOnline
         isOnline = online
+        if cameBack { networkReturns += 1 }
         guard cameBack, missedRefresh || errorMessage != nil else { return }
         await refresh()
     }

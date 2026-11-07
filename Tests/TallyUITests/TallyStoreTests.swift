@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import Observation
 import Testing
 import TallyCore
@@ -616,6 +617,47 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
         #expect(await script.calls == 2)
         #expect(store.errorMessage == nil)
         #expect(store.count == 2)
+    }
+
+    @Test func aFetchThatFailsAsTheNetworkReturnsIsTriedAgain() async throws {
+        let gate = Gate()
+        let script = Script([.failure(Offline()), .success(snapshot(opened: 2))])
+        let store = TallyStore(defaults: freshDefaults()) {
+            await gate.pass()
+            return try await script.next()
+        }
+        await store.networkChanged(isOnline: false)
+        let inFlight = Task { await store.refresh() }
+        while await gate.started < 1 { try await Task.sleep(for: .milliseconds(5)) }
+        await store.networkChanged(isOnline: true)
+        await gate.release()
+        await inFlight.value
+        #expect(await script.calls == 2)
+        #expect(store.errorMessage == nil)
+        #expect(store.count == 2)
+    }
+
+    @Test func aFetchThatFailsAfterTheNetworkDropsAndReturnsIsTriedAgain() async throws {
+        let gate = Gate()
+        let script = Script([.failure(Offline()), .success(snapshot(opened: 3))])
+        let store = TallyStore(defaults: freshDefaults()) {
+            await gate.pass()
+            return try await script.next()
+        }
+        let inFlight = Task { await store.refreshIfStale() }
+        while await gate.started < 1 { try await Task.sleep(for: .milliseconds(5)) }
+        await store.networkChanged(isOnline: false)
+        await store.networkChanged(isOnline: true)
+        await gate.release()
+        await inFlight.value
+        #expect(await script.calls == 2)
+        #expect(store.count == 3)
+    }
+
+    @Test func aPathThatConnectsOnDemandCountsAsOnline() {
+        #expect(NetworkStatus.isUsable(.satisfied))
+        #expect(NetworkStatus.isUsable(.requiresConnection))
+        #expect(!NetworkStatus.isUsable(.unsatisfied))
     }
 
     @Test func theNetworkComingBackDoesNotRefetchNumbersNothingWaitedFor() async {

@@ -946,6 +946,49 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
         #expect(await script.calls == 2)
     }
 
+    /// The day change on waking is often still failing its first fetch when the schedule starts over. The schedule
+    /// retries it soon, not an interval later.
+    @Test func wakingDuringARefreshThatFailsRetriesItSoon() async throws {
+        let gate = Gate()
+        let script = Script([
+            .success(snapshot(opened: 1, at: Date().addingTimeInterval(-10 * 60))), .failure(Offline()),
+            .success(snapshot(opened: 6)),
+        ])
+        let store = TallyStore(defaults: freshDefaults(), network: online) {
+            if await script.calls == 1 { await gate.pass() }
+            return try await script.next()
+        }
+        store.retryDelay = .milliseconds(50)
+        store.start()
+        while await script.calls < 1 { try await Task.sleep(for: .milliseconds(10)) }
+        Task { await store.calendarDayChanged() }
+        while await gate.started < 1 { try await Task.sleep(for: .milliseconds(10)) }
+        store.systemWoke()
+        try await Task.sleep(for: .milliseconds(50))
+        await gate.release()
+        for _ in 0..<200 where await script.calls < 3 { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(await script.calls == 3)
+        #expect(store.count == 6)
+    }
+
+    @Test func wakingDuringTheSchedulesOwnFailingRefreshStillRetriesIt() async throws {
+        let gate = Gate()
+        let script = Script([.failure(Offline()), .success(snapshot(opened: 6))])
+        let store = TallyStore(defaults: freshDefaults(), network: online) {
+            if await script.calls == 0 { await gate.pass() }
+            return try await script.next()
+        }
+        store.retryDelay = .milliseconds(50)
+        store.start()
+        while await gate.started < 1 { try await Task.sleep(for: .milliseconds(10)) }
+        store.systemWoke()
+        try await Task.sleep(for: .milliseconds(50))
+        await gate.release()
+        for _ in 0..<200 where await script.calls < 2 { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(await script.calls == 2)
+        #expect(store.count == 6)
+    }
+
     @Test func wakingLeavesNumbersJustFetchedAlone() async throws {
         let script = Script([.success(snapshot(opened: 1))])
         let store = TallyStore(defaults: freshDefaults(), network: online) { try await script.next() }

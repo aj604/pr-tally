@@ -21,6 +21,19 @@ private func snapshot(opened: Int, at now: Date = Date()) -> MonthSnapshot {
     )
 }
 
+private func snapshot(opened: Int, merged: Int, at now: Date = Date()) -> MonthSnapshot {
+    let base = snapshot(opened: opened, at: now)
+    let prs = (0..<merged).map {
+        PullRequest(
+            id: "m\($0)", title: "", url: URL(string: "https://github.com")!, createdAt: now, mergedAt: now,
+            repository: .init(nameWithOwner: "me/app")
+        )
+    }
+    return MonthSnapshot(
+        login: "me", window: base.window, opened: base.opened, merged: prs, totalContributions: 0, fetchedAt: now
+    )
+}
+
 private func november(_ day: Int) -> Date {
     Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: day, hour: 12))!
 }
@@ -958,6 +971,54 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
         await third.refresh()
         await third.refresh()
         #expect(sent.milestones.count == 1)
+    }
+
+    @Test func aGoalRaisedAfterReachingItIsAnnouncedWhenItIsReachedToo() async {
+        let sent = Sent()
+        let script = Script([
+            .success(snapshot(opened: 999)), .success(snapshot(opened: 1000)), .success(snapshot(opened: 1049)),
+            .success(snapshot(opened: 1050)), .success(snapshot(opened: 1049)), .success(snapshot(opened: 1051)),
+        ])
+        let store = TallyStore(defaults: freshDefaults(), notify: { sent.milestones.append($0) }) {
+            try await script.next()
+        }
+        await store.refresh()
+        await store.refresh()
+        #expect(sent.milestones.count == 1)
+        store.goal = 1050
+        await store.refresh()
+        await store.refresh()
+        #expect(sent.milestones.count == 2)
+        #expect(sent.milestones.last?.body.hasPrefix("1,050 PRs opened in ") == true)
+        // The new goal is still announced only once.
+        await store.refresh()
+        await store.refresh()
+        #expect(sent.milestones.count == 2)
+    }
+
+    @Test func reachingTheGoalInTheOtherMetricIsAnnouncedToo() async {
+        let sent = Sent()
+        let script = Script([
+            .success(snapshot(opened: 2, merged: 0)), .success(snapshot(opened: 3, merged: 0)),
+            .success(snapshot(opened: 4, merged: 2)), .success(snapshot(opened: 4, merged: 3)),
+            .success(snapshot(opened: 5, merged: 3)),
+        ])
+        let store = TallyStore(defaults: freshDefaults(), notify: { sent.milestones.append($0) }) {
+            try await script.next()
+        }
+        store.goal = 3
+        await store.refresh()
+        await store.refresh()
+        #expect(sent.milestones.count == 1)
+        store.metric = .merged
+        await store.refresh()
+        await store.refresh()
+        #expect(sent.milestones.count == 2)
+        #expect(sent.milestones.last?.body.hasPrefix("3 PRs merged in ") == true)
+        // Switching back finds opened already over the goal, which was announced before.
+        store.metric = .opened
+        await store.refresh()
+        #expect(sent.milestones.count == 2)
     }
 
     @Test func lastMonthsNumbersAreNotACrossingThisMonth() async {

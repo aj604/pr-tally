@@ -22,10 +22,17 @@ private func pr(_ id: Int, createdAt: Date, mergedAt: Date? = nil, repo: String 
 private final class FakeGitHub: Sendable {
     let prs: [PullRequest]
     let failure: String?
+    /// Cursors that don't show where a page starts, so the client can only follow them.
+    let opaqueCursors: Bool
+    /// Opened once the first page of opened PRs has been served, and listed first, as GitHub lists the newest.
+    let arrivals: [PullRequest]
+    private let arrived = Box(false)
 
-    init(prs: [PullRequest], failure: String? = nil) {
+    init(prs: [PullRequest], failure: String? = nil, opaqueCursors: Bool = false, arrivals: [PullRequest] = []) {
         self.prs = prs
         self.failure = failure
+        self.opaqueCursors = opaqueCursors
+        self.arrivals = arrivals
     }
 
     func respond(to body: Data) throws -> Data {
@@ -48,16 +55,17 @@ private final class FakeGitHub: Sendable {
         let range = query.components(separatedBy: isCreated ? "created:" : "merged:")[1].components(separatedBy: "..")
         let from = try! Date(range[0], strategy: .iso8601)
         let to = try! Date(range[1], strategy: .iso8601)
-        let matches = prs.filter {
+        let matches = ((arrived.value ? arrivals : []) + prs).filter {
             guard let date = isCreated ? $0.createdAt : $0.mergedAt else { return false }
             return date >= from && date <= to
         }
-        let offset = after.flatMap(Int.init) ?? 0
+        if isCreated { arrived.value = true }
+        let offset = after.flatMap(offset(of:)) ?? 0
         let page = Array(matches.prefix(FakeGitHub.cap).dropFirst(offset).prefix(100))
         let next = offset + page.count
         return [
             "issueCount": matches.count,
-            "pageInfo": ["hasNextPage": next < min(matches.count, FakeGitHub.cap), "endCursor": String(next)],
+            "pageInfo": ["hasNextPage": next < min(matches.count, FakeGitHub.cap), "endCursor": cursor(at: next)],
             "nodes": page.map { pr in
                 [
                     "id": pr.id, "title": pr.title, "url": pr.url.absoluteString,
@@ -69,11 +77,46 @@ private final class FakeGitHub: Sendable {
         ]
     }
 
+    /// GitHub's cursors are the count of results so far after `cursor:`, in base64.
+    private func cursor(at offset: Int) -> String {
+        opaqueCursors ? "page-\(offset)" : Data("cursor:\(offset)".utf8).base64EncodedString()
+    }
+
+    private func offset(of cursor: String) -> Int? {
+        if opaqueCursors { return Int(cursor.replacingOccurrences(of: "page-", with: "")) }
+        return Data(base64Encoded: cursor).flatMap { Int(String(decoding: $0, as: UTF8.self).dropFirst("cursor:".count)) }
+    }
+
     private static let cap = 1000
+}
+
+/// Counts requests, and the most in flight at once.
+private actor Overlap {
+    private var inFlight = 0
+    private(set) var peak = 0
+    private(set) var requests = 0
+
+    func begin() {
+        inFlight += 1
+        requests += 1
+        peak = max(peak, inFlight)
+    }
+
+    func end() { inFlight -= 1 }
 }
 
 private func client(_ fake: FakeGitHub) -> GitHubClient {
     GitHubClient { try fake.respond(to: $0) }
+}
+
+private func client(_ fake: FakeGitHub, overlap: Overlap) -> GitHubClient {
+    GitHubClient { body in
+        await overlap.begin()
+        // Long enough for requests sent together to overlap.
+        try? await Task.sleep(for: .milliseconds(50))
+        await overlap.end()
+        return try fake.respond(to: body)
+    }
 }
 
 @Suite struct GitHubClientTests {
@@ -97,6 +140,41 @@ private func client(_ fake: FakeGitHub) -> GitHubClient {
         #expect(snapshot.merged.map(\.id) == ["PR_2"])
         #expect(snapshot.login == "me")
         #expect(snapshot.totalContributions == 42)
+    }
+
+    @Test func fetchesAHeavyMonthsPagesTogetherWithoutAskingForAnyTwice() async throws {
+        // 800 PRs opened and merged through the month: eight pages of each.
+        let prs = (0..<800).map {
+            let created = monthStart.addingTimeInterval(Double($0) * 3000)
+            return pr($0, createdAt: created, mergedAt: created.addingTimeInterval(600))
+        }
+        let overlap = Overlap()
+        let snapshot = try await client(FakeGitHub(prs: prs), overlap: overlap).fetchSnapshot(at: now, calendar: utc)
+        #expect(Set(snapshot.opened.map(\.id)).count == 800)
+        #expect(Set(snapshot.merged.map(\.id)).count == 800)
+        #expect(await overlap.requests == 1 + 8 + 8)
+        // More than one page of each search at a time, and never more than the limit.
+        #expect(await overlap.peak > 2)
+        #expect(await overlap.peak <= 2 * GitHubClient.concurrentPages)
+    }
+
+    @Test func followsCursorsItCantNumberOnePageAtATime() async throws {
+        let prs = (0..<800).map { pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 3000)) }
+        let overlap = Overlap()
+        let fake = FakeGitHub(prs: prs, opaqueCursors: true)
+        let snapshot = try await client(fake, overlap: overlap).fetchSnapshot(at: now, calendar: utc)
+        #expect(Set(snapshot.opened.map(\.id)).count == 800)
+        #expect(await overlap.requests == 1 + 8 + 1)
+        #expect(await overlap.peak <= 2)
+    }
+
+    @Test func aPullRequestOpenedMidRefreshDoesNotPushAnotherOutOfTheCount() async throws {
+        let prs = (0..<200).map { pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 3000)) }
+        let arrivals = (200..<210).map { pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 3000)) }
+        let fake = FakeGitHub(prs: prs, arrivals: arrivals)
+        let snapshot = try await client(fake).fetchSnapshot(at: now, calendar: utc)
+        #expect(Set(prs.map(\.id)).isSubset(of: snapshot.opened.map(\.id)))
+        #expect(Set(snapshot.opened.map(\.id)).count == snapshot.opened.count)
     }
 
     @Test func graphQLErrorsFailTheFetchInsteadOfUndercounting() async {
@@ -569,7 +647,7 @@ private struct HeaderCase: Sendable, CustomTestStringConvertible {
         let failures = Counter()
         let client = http { body in
             _ = requests.next()
-            if String(decoding: body, as: UTF8.self).contains("\"after\":\"100\""), failures.next() <= 2 {
+            if String(decoding: body, as: UTF8.self).contains(GitHubClient.cursor(at: 100)), failures.next() <= 2 {
                 return (502, [:], Data("bad gateway".utf8))
             }
             return try ok(fake, body)

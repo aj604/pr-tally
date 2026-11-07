@@ -42,6 +42,13 @@ public struct GitHubClient: Sendable {
     /// GitHub search returns at most this many results per query, however many match.
     static let searchResultCap = 1000
 
+    /// How many results each search page asks for, the most GitHub allows.
+    static let pageSize = 100
+
+    /// How many of one search's pages are asked for at once. Two searches run side by side, so a refresh
+    /// has at most twice this many requests in flight.
+    static let concurrentPages = 4
+
     /// How long to wait before each retry of a request that failed in passing.
     static let retryDelays: [Duration] = [.seconds(1), .seconds(3)]
 
@@ -164,6 +171,12 @@ public struct GitHubClient: Sendable {
         }
 
         var results = page.nodes.compactMap { $0 }
+        if page.pageInfo.hasNextPage, let cursors = Self.remainingCursors(after: page), !cursors.isEmpty {
+            let rest = try await searchPages(query: terms, after: cursors)
+            results += rest.flatMap { $0.nodes.compactMap { $0 } }
+            // Results that arrived during the refresh push the last ones onto a page nobody asked for.
+            page = rest[rest.count - 1]
+        }
         while page.pageInfo.hasNextPage, let cursor = page.pageInfo.endCursor {
             page = try await searchPage(query: terms, after: cursor)
             results += page.nodes.compactMap { $0 }
@@ -171,10 +184,35 @@ public struct GitHubClient: Sendable {
         return results
     }
 
+    /// Where each page after `first` starts, when `first`'s cursor shows GitHub's numbering: the count of
+    /// results so far after `cursor:`, in base64. GitHub doesn't promise that, so any other cursor is
+    /// followed a page at a time, as GitHub hands them out.
+    private static func remainingCursors(after first: SearchData.Search) -> [String]? {
+        guard first.nodes.count == pageSize, first.pageInfo.endCursor == cursor(at: pageSize) else { return nil }
+        return stride(from: pageSize, to: min(first.issueCount, searchResultCap), by: pageSize).map(cursor(at:))
+    }
+
+    static func cursor(at offset: Int) -> String {
+        Data("cursor:\(offset)".utf8).base64EncodedString()
+    }
+
+    /// Fetches the pages that start at `cursors` a few at a time, rather than a round trip per page.
+    private func searchPages(query terms: String, after cursors: [String]) async throws -> [SearchData.Search] {
+        try await withThrowingTaskGroup(of: (Int, SearchData.Search).self) { group in
+            var pages = [SearchData.Search?](repeating: nil, count: cursors.count)
+            for (index, cursor) in cursors.enumerated() {
+                if index >= Self.concurrentPages, let (done, page) = try await group.next() { pages[done] = page }
+                group.addTask { (index, try await searchPage(query: terms, after: cursor)) }
+            }
+            for try await (done, page) in group { pages[done] = page }
+            return pages.map { $0! }
+        }
+    }
+
     private func searchPage(query terms: String, after cursor: String?) async throws -> SearchData.Search {
         let query = """
         query($q: String!, $after: String) {
-          search(type: ISSUE, query: $q, first: 100, after: $after) {
+          search(type: ISSUE, query: $q, first: \(Self.pageSize), after: $after) {
             issueCount
             pageInfo { hasNextPage endCursor }
             nodes {

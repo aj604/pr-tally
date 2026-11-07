@@ -61,6 +61,10 @@ public final class TallyStore {
     /// When the latest refresh failed or waited for the network, until one succeeds. Set again on every try, so
     /// the menu bar redraws as each retry finds the numbers a little older.
     private var stalledAt: Date?
+    /// When the refreshes since the last good one started failing or waiting for the network.
+    private var stalledSince: Date?
+    /// Read for the time of a failed or waiting refresh, so tests can let minutes of retries pass.
+    @ObservationIgnored var clock: () -> Date = Date.init
     private var schedule: Task<Void, Never>?
     private var watchingSystem = false
     /// Read by everything that depends on today's date, so it redraws at midnight even if the refresh then fails.
@@ -148,19 +152,26 @@ public final class TallyStore {
         return pace.beatsDailyQuota(today: snapshot.todayCount(for: metric, at: now))
     }
 
-    /// Whether the menu bar's numbers have stopped updating, which fades them: a refresh failed, or is waiting
-    /// for the network, more than two minutes after the schedule's next one was due. The scheduled try itself
-    /// always comes a whole interval after the numbers were fetched, so a failure there, and the retry a minute
-    /// later, are left to put right unseen.
+    /// Whether the menu bar has stopped updating, which fades it: refreshes have been failing, or waiting for the
+    /// network, for two minutes, and the numbers, if there are any this month, are more than two minutes past
+    /// when the schedule's next one was due. So the first try and the retry a minute later are left to put
+    /// things right unseen, whether that try is the schedule's own or the one on waking hours later.
+    ///
+    /// With no numbers for this month, the "–" fades the same way, so a first launch that can't sign in, or a new
+    /// month that can't be fetched, doesn't look like loading for good.
     public var menuBarIsStale: Bool {
-        guard let stalledAt, let fetchedAt = currentSnapshot()?.fetchedAt else { return false }
+        guard let stalledAt, let stalledSince, stalledAt.timeIntervalSince(stalledSince) >= 120 else { return false }
+        guard let fetchedAt = currentSnapshot()?.fetchedAt else { return true }
         return stalledAt.timeIntervalSince(fetchedAt) >= Double(refreshMinutes * 60 + 120)
     }
 
     /// What VoiceOver reads for the menu bar item, since the image carries the numbers visually.
     public var menuBarAccessibilityLabel: String {
         let now = Date()
-        guard let pace = pace(at: now) else { return "PR Tally, loading" }
+        guard let pace = pace(at: now) else {
+            guard menuBarIsStale else { return "PR Tally, loading" }
+            return "PR Tally, not updating" + (fetchedTime(at: now).map { " since \($0)" } ?? "")
+        }
         let today = "\(menuBarTitle(at: now)) today\(menuBarBeatsPace(at: now) ? ", beating the daily pace" : "")"
         let label = "\(today). \(pace.count.formatted()) of \(pace.goal.formatted()) \(metric.noun). \(pace.statusText)"
         guard menuBarIsStale, let time = fetchedTime(at: now) else { return label }
@@ -184,11 +195,12 @@ public final class TallyStore {
             snapshot = fetched
             errorMessage = nil
             stalledAt = nil
+            stalledSince = nil
             cache?.save(fetched)
             announceGoal(from: previous, to: fetched)
         } catch {
             errorMessage = error.localizedDescription
-            stalledAt = Date()
+            stalled()
         }
         isRefreshing = false
         // A fetch that spanned midnight may have come back with the month that just ended, and one that failed
@@ -234,7 +246,13 @@ public final class TallyStore {
     private func waitForNetwork() {
         missedRefresh = true
         errorMessage = Self.offlineMessage
-        stalledAt = Date()
+        stalled()
+    }
+
+    private func stalled() {
+        let now = clock()
+        stalledAt = now
+        if stalledSince == nil { stalledSince = now }
     }
 
     /// The next opening starts at the numbers, not wherever the last one ended: Settings or the PR list

@@ -227,14 +227,22 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
         #expect(long.size.width > short.size.width)
     }
 
-    @Test func menuBarFadesWhenARefreshFailsAnIntervalAfterTheLastNumbers() async {
+    @Test func menuBarFadesWhenRefreshesKeepFailingAnIntervalAfterTheLastNumbers() async {
         let fetchedAt = Date().addingTimeInterval(-20 * 60)
         let script = Script([
-            .success(snapshot(opened: 5, at: fetchedAt)), .failure(Offline()), .success(snapshot(opened: 6)),
+            .success(snapshot(opened: 5, at: fetchedAt)), .failure(Offline()), .failure(Offline()), .failure(Offline()),
+            .success(snapshot(opened: 6)),
         ])
         let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        let clock = TestClock(store)
         await store.refresh()
         #expect(!store.menuBarIsStale)
+        await store.refresh()
+        #expect(!store.menuBarIsStale)
+        clock.advance(60)
+        await store.refresh()
+        #expect(!store.menuBarIsStale)
+        clock.advance(60)
         await store.refresh()
         #expect(store.menuBarIsStale)
         let time = fetchedAt.formatted(date: .omitted, time: .shortened)
@@ -248,7 +256,10 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
         let fetchedAt = Date().addingTimeInterval(-10 * 60)
         let script = Script([.success(snapshot(opened: 5, at: fetchedAt)), .failure(Offline())])
         let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        let clock = TestClock(store)
         await store.refresh()
+        await store.refresh()
+        clock.advance(120)
         await store.refresh()
         #expect(store.errorMessage == "Offline")
         #expect(!store.menuBarIsStale)
@@ -268,13 +279,52 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
         #expect(!store.menuBarIsStale)
     }
 
+    /// Waking runs the overdue scheduled try at once, often before the network is up. Numbers from last night are
+    /// long past due, but that try and its retry get the same two minutes as any other.
+    @Test func aFailureOnWakingHoursLaterLeavesTheMenuBarAloneForItsRetries() async {
+        let script = Script([.success(snapshot(opened: 5, at: Date().addingTimeInterval(-8 * 3600))), .failure(Offline())])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        let clock = TestClock(store)
+        await store.refresh()
+        await store.refresh()
+        #expect(!store.menuBarIsStale)
+        clock.advance(60)
+        await store.refresh()
+        #expect(!store.menuBarIsStale)
+        clock.advance(60)
+        await store.refresh()
+        #expect(store.menuBarIsStale)
+    }
+
+    @Test func aGoodRefreshStartsTheTwoMinutesOver() async {
+        let lastNight = Date().addingTimeInterval(-8 * 3600)
+        let script = Script([
+            .success(snapshot(opened: 5, at: lastNight)), .failure(Offline()), .success(snapshot(opened: 5, at: lastNight)),
+            .failure(Offline()),
+        ])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        let clock = TestClock(store)
+        await store.refresh()
+        await store.refresh()
+        clock.advance(60)
+        await store.refresh()
+        clock.advance(120)
+        await store.refresh()
+        #expect(store.errorMessage == "Offline")
+        #expect(!store.menuBarIsStale)
+    }
+
     @Test func waitingForTheNetworkFadesOldNumbersUntilItReturns() async {
         let script = Script([
             .success(snapshot(opened: 5, at: Date().addingTimeInterval(-25 * 60))), .success(snapshot(opened: 6)),
         ])
         let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        let clock = TestClock(store)
         await store.refresh()
         await store.networkChanged(isOnline: false)
+        await store.refreshIfStale()
+        #expect(!store.menuBarIsStale)
+        clock.advance(120)
         await store.refreshIfStale()
         #expect(store.menuBarIsStale)
         await store.networkChanged(isOnline: true)
@@ -282,10 +332,35 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
         #expect(!store.menuBarIsStale)
     }
 
-    @Test func noNumbersYetIsNotFaded() async {
+    @Test func withNoNumbersTheDashFadesOnceRefreshesHaveFailedForTwoMinutes() async {
         let store = TallyStore(defaults: freshDefaults()) { throw Offline() }
+        let clock = TestClock(store)
+        await store.refresh()
+        clock.advance(60)
         await store.refresh()
         #expect(!store.menuBarIsStale)
+        #expect(store.menuBarAccessibilityLabel == "PR Tally, loading")
+        clock.advance(60)
+        await store.refresh()
+        #expect(store.menuBarIsStale)
+        #expect(store.menuBarTitle() == "–")
+        #expect(store.menuBarAccessibilityLabel == "PR Tally, not updating")
+    }
+
+    /// A new month that can't be fetched shows "–" like one that is loading, so it fades and says when the
+    /// numbers last updated.
+    @Test func lastMonthsNumbersFadeTheDashAndSayWhenTheyLastUpdated() async {
+        let (cache, _) = freshCache()
+        cache.save(snapshot(opened: 40, at: october31))
+        let store = TallyStore(defaults: freshDefaults(), cache: cache) { throw Offline() }
+        let clock = TestClock(store)
+        await store.refresh()
+        clock.advance(120)
+        await store.refresh()
+        #expect(store.menuBarTitle() == "–")
+        #expect(store.menuBarIsStale)
+        let time = october31.formatted(.dateTime.month(.abbreviated).day().hour().minute())
+        #expect(store.menuBarAccessibilityLabel == "PR Tally, not updating since \(time)")
     }
 
     /// Nothing else changes as a failing refresh is retried, yet each retry finds the numbers older.
@@ -996,6 +1071,20 @@ private func maxAlpha(of image: NSImage) -> CGFloat {
 
 private final class Redraw: @unchecked Sendable {
     var fired = false
+}
+
+/// The store's time for failed refreshes, moved on by hand rather than waiting out real retries.
+@MainActor
+private final class TestClock {
+    private var now = Date()
+
+    init(_ store: TallyStore) {
+        store.clock = { [unowned self] in now }
+    }
+
+    func advance(_ seconds: TimeInterval) {
+        now += seconds
+    }
 }
 
 /// Collects what the store would have sent as notifications.

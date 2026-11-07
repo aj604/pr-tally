@@ -2,7 +2,7 @@ import Foundation
 
 public enum GitHubError: Error, Equatable, LocalizedError {
     case noToken
-    case unauthorized
+    case unauthorized(TokenSource)
     case http(Int)
     case graphQL(String)
     case rateLimited(until: Date)
@@ -10,7 +10,11 @@ public enum GitHubError: Error, Equatable, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .noToken: "No GitHub login found. Run `gh auth login` or add a token in Settings."
-        case .unauthorized: "GitHub rejected the token. Run `gh auth login` or update it in Settings."
+        case .unauthorized(.saved):
+            "GitHub rejected the token saved in Settings, which may have expired. "
+                + "Save a new one there, or remove it to use your `gh` login."
+        case .unauthorized(.githubCLI):
+            "GitHub rejected your `gh` login. Run `gh auth login` to sign in again, or add a token in Settings."
         case .http(let code): "GitHub returned HTTP \(code)."
         case .graphQL(let message): "GitHub error: \(message)"
         case .rateLimited(let until):
@@ -59,7 +63,7 @@ public struct GitHubClient: Sendable {
     init(tokens: TokenProvider, session: URLSession, retryDelays: [Duration], now: @escaping @Sendable () -> Date) {
         let gate = GitHubRateLimitGate()
         let open: @Sendable () async throws -> GraphQLTransport = {
-            guard let token = await tokens.token() else { throw GitHubError.noToken }
+            guard let (token, source) = await tokens.credential() else { throw GitHubError.noToken }
             try await gate.check(now: now(), token: token)
             return { body in
                 try await gate.check(now: now(), token: token)
@@ -78,7 +82,7 @@ public struct GitHubClient: Sendable {
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                 if status == 401 {
                     await tokens.invalidate()
-                    throw GitHubError.unauthorized
+                    throw GitHubError.unauthorized(source)
                 }
                 guard status == 200 else { throw GitHubError.http(status) }
                 return data

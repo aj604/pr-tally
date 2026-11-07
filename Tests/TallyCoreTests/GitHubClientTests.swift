@@ -156,6 +156,11 @@ private func client(_ fake: FakeGitHub) -> GitHubClient {
         #expect(await provider.token() == "cli")
     }
 
+    @Test func saysWhetherTheTokenWasSavedOrReadFromTheCLI() async {
+        #expect(await TokenProvider(override: { "saved" }, cli: { "cli" }).credential()?.source == .saved)
+        #expect(await TokenProvider(override: { nil }, cli: { "cli" }).credential()?.source == .githubCLI)
+    }
+
     @Test func reportsNoTokenWhenNeitherSourceHasOne() async {
         let provider = TokenProvider(override: { nil }, cli: { nil })
         #expect(await provider.token() == nil)
@@ -508,7 +513,7 @@ private struct HeaderCase: Sendable, CustomTestStringConvertible {
         let client = clientReading([stale, fresh], clock: clock, reads: reads) { token, body in
             token == stale ? (401, [:], Data()) : try ok(fake, body)
         }
-        #expect(await failure(of: client) as? GitHubError == .unauthorized)
+        #expect(await failure(of: client) as? GitHubError == .unauthorized(.githubCLI))
         // No clock movement: the 401 alone must force the re-read.
         let snapshot = try await client.fetchSnapshot(at: now, calendar: utc)
         #expect(snapshot.count(for: .opened) == 1)
@@ -572,8 +577,32 @@ private struct HeaderCase: Sendable, CustomTestStringConvertible {
             return (401, [:], Data())
         }
         let error = await failure(of: client)
-        #expect(error as? GitHubError == .unauthorized)
+        #expect(error as? GitHubError == .unauthorized(.saved))
         #expect(requests.count == 1)
+    }
+
+    @Test func aRejectedSavedTokenIsBlamedEvenWhenTheGitHubCLIIsLoggedIn() async {
+        let fake = FakeGitHub(prs: [pr(1, createdAt: monthStart)])
+        let saved = "tok-\(UUID().uuidString)", cli = "tok-\(UUID().uuidString)"
+        StubURLProtocol.register(saved) { _ in (401, [:], Data(#"{"message":"Bad credentials"}"#.utf8)) }
+        StubURLProtocol.register(cli) { body in try ok(fake, body) }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        let client = GitHubClient(
+            tokens: TokenProvider(override: { saved }, cli: { cli }),
+            session: URLSession(configuration: configuration), retryDelays: [], now: { now }
+        )
+        // The saved token wins over `gh`, so logging in to `gh` again would change nothing.
+        #expect(await failure(of: client) as? GitHubError == .unauthorized(.saved))
+    }
+
+    @Test func aRejectedTokenSaysHowToReplaceThatToken() {
+        let saved = GitHubError.unauthorized(.saved).localizedDescription
+        #expect(saved.contains("token saved in Settings"))
+        #expect(!saved.contains("gh auth login"))
+        let cli = GitHubError.unauthorized(.githubCLI).localizedDescription
+        #expect(cli.contains("`gh` login"))
+        #expect(cli.contains("Run `gh auth login`"))
     }
 
     @Test func aPlainForbiddenIsNotARateLimit() async {

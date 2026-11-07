@@ -1,5 +1,13 @@
 import Foundation
 
+/// Where a token came from, which decides what to do when GitHub rejects it.
+public enum TokenSource: Sendable, Equatable {
+    /// Saved in Settings. It takes precedence over the CLI, so logging in to `gh` again doesn't replace it.
+    case saved
+    /// The `gh` CLI's login.
+    case githubCLI
+}
+
 /// Finds a GitHub token: a saved override first, then the `gh` CLI's login.
 public actor TokenProvider {
     /// How long a token read from the CLI is reused. Long enough that a refresh normally reads once,
@@ -47,9 +55,16 @@ public actor TokenProvider {
     }
 
     public func token() -> String? {
-        if let saved = override(), !saved.isEmpty { return saved }
+        credential()?.token
+    }
+
+    /// The token to use, and where it came from.
+    func credential() -> (token: String, source: TokenSource)? {
+        if let saved = override(), !saved.isEmpty { return (saved, .saved) }
         let current = now()
-        if let readAt, current < readAt + (failures == 0 ? lifetime : retryFloor) { return cached }
+        if let readAt, current < readAt + (failures == 0 ? lifetime : retryFloor) {
+            return cached.map { ($0, .githubCLI) }
+        }
         readAt = current
         if let fresh = cli() {
             cached = fresh
@@ -58,7 +73,7 @@ public actor TokenProvider {
             failures += 1
             if failures > Self.tolerableFailures { cached = nil }
         }
-        return cached
+        return cached.map { ($0, .githubCLI) }
     }
 
     /// Forgets the CLI token so the next request reads it again.

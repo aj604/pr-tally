@@ -19,11 +19,15 @@ private func pullRequest(id: String = UUID().uuidString, opened: Date, merged: D
     )
 }
 
-private func funnel(opened: [PullRequest], merged: [PullRequest]) -> MergeFunnel {
+private func month(opened: [PullRequest], merged: [PullRequest]) -> MonthSnapshot {
     MonthSnapshot(
         login: "someone", window: MonthWindow(containing: date(11, 1), calendar: newYork),
         opened: opened, merged: merged, totalContributions: 0, fetchedAt: date(11, 20)
-    ).mergeFunnel
+    )
+}
+
+private func funnel(opened: [PullRequest], merged: [PullRequest]) -> MergeFunnel {
+    month(opened: opened, merged: merged).mergeFunnel
 }
 
 @Suite struct MonthFunnelTests {
@@ -144,5 +148,51 @@ private func funnel(opened: [PullRequest], merged: [PullRequest]) -> MergeFunnel
         #expect(result.notMerged == 1)
         #expect(result.carriedIn == 0)
         #expect(result.medianTimeToMerge == nil)
+    }
+
+    // The PRs behind the not-merged figure, which the popover lists when the funnel is clicked.
+
+    @Test func theNotMergedPRsAreTheOnesTheFunnelCounts() {
+        let landed = pullRequest(id: "landed", opened: date(11, 2), merged: date(11, 3))
+        let waiting = pullRequest(id: "waiting", opened: date(11, 4), merged: nil)
+        let mergedNextMonth = pullRequest(id: "later", opened: date(11, 5), merged: date(12, 1))
+        let older = pullRequest(id: "older", opened: date(10, 1), merged: date(11, 2))
+        let snapshot = month(opened: [landed, waiting, mergedNextMonth], merged: [landed, older])
+        #expect(snapshot.notMergedPullRequests.map(\.id) == ["waiting", "later"])
+        #expect(snapshot.notMergedPullRequests.count == snapshot.mergeFunnel.notMerged)
+    }
+
+    @Test func aStaleOpenedCopyOfAMergedPRIsNotListedAsNotMerged() {
+        let stale = pullRequest(id: "same", opened: date(11, 2, hour: 1), merged: nil)
+        let fresh = pullRequest(id: "same", opened: date(11, 2, hour: 1), merged: date(11, 2, hour: 2))
+        let snapshot = month(opened: [stale, stale], merged: [fresh])
+        #expect(snapshot.notMergedPullRequests.isEmpty)
+        #expect(snapshot.mergeFunnel.notMerged == 0)
+    }
+
+    @Test func aPRRepeatedInTheOpenedListIsListedOnce() {
+        let waiting = pullRequest(id: "waiting", opened: date(11, 4), merged: nil)
+        let snapshot = month(opened: [waiting, waiting], merged: [])
+        #expect(snapshot.notMergedPullRequests.map(\.id) == ["waiting"])
+        #expect(snapshot.mergeFunnel.notMerged == 1)
+    }
+
+    // The PRs behind the carried-in figure, which the popover lists when it is clicked.
+
+    @Test func theCarriedInPRsAreTheOnesTheFunnelCounts() {
+        let older = pullRequest(id: "older", opened: date(10, 20), merged: date(11, 2))
+        let lastInstantOfOctober = pullRequest(id: "edge", opened: date(11, 1).addingTimeInterval(-1), merged: date(11, 3))
+        let landed = pullRequest(id: "landed", opened: date(11, 1), merged: date(11, 2))
+        let mergedLastMonth = pullRequest(id: "early", opened: date(9, 1), merged: date(10, 30))
+        let snapshot = month(opened: [landed], merged: [older, landed, lastInstantOfOctober, mergedLastMonth])
+        #expect(snapshot.carriedInPullRequests.map(\.id) == ["older", "edge"])
+        #expect(snapshot.carriedInPullRequests.count == snapshot.mergeFunnel.carriedIn)
+    }
+
+    @Test func aCarriedInPRInBothListsIsListedOnce() {
+        let older = pullRequest(id: "older", opened: date(10, 20), merged: date(11, 2))
+        let snapshot = month(opened: [older], merged: [older, older])
+        #expect(snapshot.carriedInPullRequests.map(\.id) == ["older"])
+        #expect(snapshot.mergeFunnel.carriedIn == 1)
     }
 }

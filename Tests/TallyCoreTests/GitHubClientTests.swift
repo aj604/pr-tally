@@ -22,10 +22,28 @@ private func pr(_ id: Int, createdAt: Date, mergedAt: Date? = nil, repo: String 
 private final class FakeGitHub: Sendable {
     let prs: [PullRequest]
     let failure: String?
+    /// Cursors that don't show where a page starts, so the client can only follow them.
+    let opaqueCursors: Bool
+    /// Found once a page of opened PRs at or past `arriveAfter` has been served, and listed at `arrivalPosition`:
+    /// first, as GitHub lists the newest, unless told otherwise.
+    let arrivals: [PullRequest]
+    let arrivalPosition: Int
+    /// Gone from search, as when a repository is deleted, at the same moment the arrivals appear.
+    let departures: Set<String>
+    let arriveAfter: Int
+    private let arrived = Box(false)
 
-    init(prs: [PullRequest], failure: String? = nil) {
+    init(
+        prs: [PullRequest], failure: String? = nil, opaqueCursors: Bool = false,
+        arrivals: [PullRequest] = [], arrivalPosition: Int = 0, departures: Set<String> = [], arriveAfter: Int = 0
+    ) {
         self.prs = prs
         self.failure = failure
+        self.opaqueCursors = opaqueCursors
+        self.arrivals = arrivals
+        self.arrivalPosition = arrivalPosition
+        self.departures = departures
+        self.arriveAfter = arriveAfter
     }
 
     func respond(to body: Data) throws -> Data {
@@ -48,16 +66,22 @@ private final class FakeGitHub: Sendable {
         let range = query.components(separatedBy: isCreated ? "created:" : "merged:")[1].components(separatedBy: "..")
         let from = try! Date(range[0], strategy: .iso8601)
         let to = try! Date(range[1], strategy: .iso8601)
-        let matches = prs.filter {
+        var current = prs
+        if arrived.value {
+            current.removeAll { departures.contains($0.id) }
+            current.insert(contentsOf: arrivals, at: arrivalPosition)
+        }
+        let matches = current.filter {
             guard let date = isCreated ? $0.createdAt : $0.mergedAt else { return false }
             return date >= from && date <= to
         }
-        let offset = after.flatMap(Int.init) ?? 0
+        let offset = after.flatMap(offset(of:)) ?? 0
+        if isCreated, offset >= arriveAfter { arrived.value = true }
         let page = Array(matches.prefix(FakeGitHub.cap).dropFirst(offset).prefix(100))
         let next = offset + page.count
         return [
             "issueCount": matches.count,
-            "pageInfo": ["hasNextPage": next < min(matches.count, FakeGitHub.cap), "endCursor": String(next)],
+            "pageInfo": ["hasNextPage": next < min(matches.count, FakeGitHub.cap), "endCursor": cursor(at: next)],
             "nodes": page.map { pr in
                 [
                     "id": pr.id, "title": pr.title, "url": pr.url.absoluteString,
@@ -69,11 +93,71 @@ private final class FakeGitHub: Sendable {
         ]
     }
 
+    /// GitHub's cursors are the count of results so far after `cursor:`, in base64.
+    private func cursor(at offset: Int) -> String {
+        opaqueCursors ? "page-\(offset)" : Data("cursor:\(offset)".utf8).base64EncodedString()
+    }
+
+    private func offset(of cursor: String) -> Int? {
+        if opaqueCursors { return Int(cursor.replacingOccurrences(of: "page-", with: "")) }
+        return Data(base64Encoded: cursor).flatMap { Int(String(decoding: $0, as: UTF8.self).dropFirst("cursor:".count)) }
+    }
+
     private static let cap = 1000
+}
+
+/// Counts requests, and the most in flight at once.
+private actor Overlap {
+    private var inFlight = 0
+    private(set) var peak = 0
+    private(set) var requests = 0
+
+    func begin() {
+        inFlight += 1
+        requests += 1
+        peak = max(peak, inFlight)
+    }
+
+    func end() { inFlight -= 1 }
 }
 
 private func client(_ fake: FakeGitHub) -> GitHubClient {
     GitHubClient { try fake.respond(to: $0) }
+}
+
+/// Holds back the second page until the third has been answered, as GitHub may answer pages sent together.
+private func clientAnsweringOutOfOrder(_ fake: FakeGitHub) -> GitHubClient {
+    let answeredThird = Box(false)
+    return GitHubClient { body in
+        let offset = pageOffset(in: body)
+        if (1..<150).contains(offset) {
+            // A client that sends pages one at a time never asks for the third first, so stop waiting eventually.
+            let deadline = ContinuousClock.now + .seconds(1)
+            while !answeredThird.value, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        }
+        let reply = try fake.respond(to: body)
+        if (150..<250).contains(offset) { answeredThird.value = true }
+        return reply
+    }
+}
+
+/// Where the page a request asks for starts, from GitHub's `cursor:N`.
+private func pageOffset(in body: Data) -> Int {
+    let request = try! JSONSerialization.jsonObject(with: body) as! [String: Any]
+    guard let cursor = (request["variables"] as! [String: String])["after"],
+        let decoded = Data(base64Encoded: cursor)
+    else { return 0 }
+    return Int(String(decoding: decoded, as: UTF8.self).dropFirst("cursor:".count)) ?? 0
+}
+
+private func client(_ fake: FakeGitHub, overlap: Overlap) -> GitHubClient {
+    GitHubClient { body in
+        await overlap.begin()
+        // Long enough for requests sent together to overlap.
+        try? await Task.sleep(for: .milliseconds(50))
+        await overlap.end()
+        return try fake.respond(to: body)
+    }
 }
 
 @Suite struct GitHubClientTests {
@@ -97,6 +181,91 @@ private func client(_ fake: FakeGitHub) -> GitHubClient {
         #expect(snapshot.merged.map(\.id) == ["PR_2"])
         #expect(snapshot.login == "me")
         #expect(snapshot.totalContributions == 42)
+    }
+
+    @Test func fetchesAHeavyMonthsPagesTogetherWithoutAskingForAnyTwice() async throws {
+        // 800 PRs opened and merged through the month: nine pages of each, since each page after the first
+        // starts on the PR the one before ended on.
+        let prs = (0..<800).map {
+            let created = monthStart.addingTimeInterval(Double($0) * 3000)
+            return pr($0, createdAt: created, mergedAt: created.addingTimeInterval(600))
+        }
+        let overlap = Overlap()
+        let snapshot = try await client(FakeGitHub(prs: prs), overlap: overlap).fetchSnapshot(at: now, calendar: utc)
+        #expect(Set(snapshot.opened.map(\.id)).count == 800)
+        #expect(Set(snapshot.merged.map(\.id)).count == 800)
+        #expect(await overlap.requests == 1 + 9 + 9)
+        // More than one page of each search at a time, and never more than the limit.
+        #expect(await overlap.peak > 2)
+        #expect(await overlap.peak <= 2 * GitHubClient.concurrentPages)
+    }
+
+    @Test func followsCursorsItCantNumberOnePageAtATime() async throws {
+        let prs = (0..<800).map { pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 3000)) }
+        let overlap = Overlap()
+        let fake = FakeGitHub(prs: prs, opaqueCursors: true)
+        let snapshot = try await client(fake, overlap: overlap).fetchSnapshot(at: now, calendar: utc)
+        #expect(Set(snapshot.opened.map(\.id)).count == 800)
+        #expect(await overlap.requests == 1 + 8 + 1)
+        #expect(await overlap.peak <= 2)
+    }
+
+    @Test func aPullRequestOpenedMidRefreshDoesNotPushAnotherOutOfTheCount() async throws {
+        let prs = (0..<200).map { pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 3000)) }
+        let arrivals = (200..<210).map { pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 3000)) }
+        let fake = FakeGitHub(prs: prs, arrivals: arrivals)
+        let snapshot = try await client(fake).fetchSnapshot(at: now, calendar: utc)
+        #expect(Set(prs.map(\.id)).isSubset(of: snapshot.opened.map(\.id)))
+        #expect(Set(snapshot.opened.map(\.id)).count == snapshot.opened.count)
+    }
+
+    @Test func aPullRequestOpenedBetweenPagesAnsweredOutOfOrderDoesNotPushAnotherOutOfTheCount() async throws {
+        let prs = (0..<450).map { pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 3000)) }
+        let arrivals = (450..<460).map { pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 3000)) }
+        // Listed among the results on page 100, so nothing is seen twice and only the count gives the shift away.
+        let fake = FakeGitHub(prs: prs, arrivals: arrivals, arrivalPosition: 150, arriveAfter: 190)
+        let snapshot = try await clientAnsweringOutOfOrder(fake).fetchSnapshot(at: now, calendar: utc)
+        #expect(Set(prs.map(\.id)).isSubset(of: snapshot.opened.map(\.id)))
+    }
+
+    @Test func oneArrivingAsAnotherLeavesBetweenPagesAnsweredOutOfOrderDoesNotPushAThirdOut() async throws {
+        // The count stays at 300, so only a PR seen twice gives the shift away.
+        let prs = (0..<300).map { pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 3000)) }
+        let arrival = pr(300, createdAt: monthStart.addingTimeInterval(300 * 3000))
+        let fake = FakeGitHub(prs: prs, arrivals: [arrival], departures: ["PR_250"], arriveAfter: 190)
+        let snapshot = try await clientAnsweringOutOfOrder(fake).fetchSnapshot(at: now, calendar: utc)
+        #expect(Set(prs.map(\.id)).subtracting(["PR_250"]).isSubset(of: snapshot.opened.map(\.id)))
+    }
+
+    @Test func oneLeavingAsAnotherArrivesOnAPageAnsweredLateDoesNotPushAThirdOut() async throws {
+        // The count stays at 300 and no PR is seen twice, so neither gives the shift away.
+        let prs = (0..<300).map { pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 3000)) }
+        let arrival = pr(300, createdAt: monthStart.addingTimeInterval(300 * 3000))
+        let fake = FakeGitHub(
+            prs: prs, arrivals: [arrival], arrivalPosition: 150, departures: ["PR_250"], arriveAfter: 190
+        )
+        let snapshot = try await clientAnsweringOutOfOrder(fake).fetchSnapshot(at: now, calendar: utc)
+        #expect(Set(prs.map(\.id)).subtracting(["PR_250"]).isSubset(of: snapshot.opened.map(\.id)))
+    }
+
+    @Test func pullRequestsLeavingFromTheFirstPageWhilePagesAreOutDoNotPushOthersPastIt() async throws {
+        // A deleted repository takes twelve PRs off the first page, so every count-based cursor is out of date.
+        let prs = (0..<211).map { pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 3000)) }
+        let gone = Set((48..<60).map { "PR_\($0)" })
+        let fake = FakeGitHub(prs: prs, departures: gone, arriveAfter: 190)
+        let snapshot = try await clientAnsweringOutOfOrder(fake).fetchSnapshot(at: now, calendar: utc)
+        #expect(Set(snapshot.opened.map(\.id)) == Set(prs.map(\.id)).subtracting(gone))
+    }
+
+    @Test func pagesThatStillJoinUpKeepFollowingResultsListedAfterTheLast() async throws {
+        // 150 PRs listed after the 200 already there move nothing, so the pages are kept and the rest followed.
+        let prs = (0..<200).map { pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 3000)) }
+        let arrivals = (200..<350).map { pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 3000)) }
+        let overlap = Overlap()
+        let fake = FakeGitHub(prs: prs, arrivals: arrivals, arrivalPosition: 200)
+        let snapshot = try await client(fake, overlap: overlap).fetchSnapshot(at: now, calendar: utc)
+        #expect(Set(snapshot.opened.map(\.id)).count == 350)
+        #expect(await overlap.requests == 1 + (1 + 2 + 1) + 1)
     }
 
     @Test func graphQLErrorsFailTheFetchInsteadOfUndercounting() async {
@@ -156,9 +325,33 @@ private func client(_ fake: FakeGitHub) -> GitHubClient {
         #expect(await provider.token() == "cli")
     }
 
+    @Test func saysWhetherTheTokenWasSavedOrReadFromTheCLI() async {
+        #expect(await TokenProvider(override: { "saved" }, cli: { "cli" }).credential()?.source == .saved)
+        #expect(await TokenProvider(override: { nil }, cli: { "cli" }).credential()?.source == .githubCLI)
+    }
+
     @Test func reportsNoTokenWhenNeitherSourceHasOne() async {
         let provider = TokenProvider(override: { nil }, cli: { nil })
         #expect(await provider.token() == nil)
+    }
+
+    @Test func blamesAMissingLoginOnlyWhenTheGitHubCLIIsInstalled() async {
+        let loggedOut = TokenProvider(
+            override: { nil }, cli: { nil }, cliInstalled: { true },
+            lifetime: .seconds(60), retryFloor: .seconds(10), now: { .now }
+        )
+        #expect(await loggedOut.missingLogin() == .noToken)
+        let uninstalled = TokenProvider(
+            override: { nil }, cli: { nil }, cliInstalled: { false },
+            lifetime: .seconds(60), retryFloor: .seconds(10), now: { .now }
+        )
+        #expect(await uninstalled.missingLogin() == .noGitHubCLI)
+    }
+
+    @Test func aMissingGitHubCLISaysToAddATokenInsteadOfLoggingIn() {
+        let message = GitHubError.noGitHubCLI.localizedDescription
+        #expect(message.contains("Add a token in Settings"))
+        #expect(!message.contains("gh auth login"))
     }
 
     /// A provider whose CLI answers from `reads` in turn (repeating the last), on a clock the test moves.
@@ -278,6 +471,30 @@ private func client(_ fake: FakeGitHub) -> GitHubClient {
 
     @Test func runGivesUpOnAStuckCommand() {
         #expect(GitHubCLI.run("/bin/sleep", arguments: ["30"], timeout: 0.2) == nil)
+    }
+
+    @Test func looksForTheGitHubCLIWhereverAPackageManagerPutsIt() {
+        let paths = GitHubCLI.searchPaths(home: "/Users/sam", user: "sam")
+        // The places looked before the rest were added, in the same order, so nobody gets a different `gh`.
+        #expect(paths.prefix(3) == ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"])
+        for path in [
+            "/opt/local/bin/gh", "/Users/sam/.nix-profile/bin/gh", "/etc/profiles/per-user/sam/bin/gh",
+            "/run/current-system/sw/bin/gh", "/Users/sam/.local/bin/gh",
+        ] {
+            #expect(paths.contains(path))
+        }
+    }
+
+    @Test func usesTheFirstGitHubCLIThatCanRun() throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "github-data-r3-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let notRunnable = folder.appending(path: "plain").path, runnable = folder.appending(path: "gh").path
+        FileManager.default.createFile(atPath: notRunnable, contents: Data())
+        FileManager.default.createFile(atPath: runnable, contents: Data(), attributes: [.posixPermissions: 0o755])
+        let missing = folder.appending(path: "missing").path
+        #expect(GitHubCLI.executablePath(in: [missing, notRunnable, runnable]) == runnable)
+        #expect(GitHubCLI.executablePath(in: [missing, notRunnable]) == nil)
     }
 }
 
@@ -508,7 +725,7 @@ private struct HeaderCase: Sendable, CustomTestStringConvertible {
         let client = clientReading([stale, fresh], clock: clock, reads: reads) { token, body in
             token == stale ? (401, [:], Data()) : try ok(fake, body)
         }
-        #expect(await failure(of: client) as? GitHubError == .unauthorized)
+        #expect(await failure(of: client) as? GitHubError == .unauthorized(.githubCLI))
         // No clock movement: the 401 alone must force the re-read.
         let snapshot = try await client.fetchSnapshot(at: now, calendar: utc)
         #expect(snapshot.count(for: .opened) == 1)
@@ -521,7 +738,7 @@ private struct HeaderCase: Sendable, CustomTestStringConvertible {
         let failures = Counter()
         let client = http { body in
             _ = requests.next()
-            if String(decoding: body, as: UTF8.self).contains("\"after\":\"100\""), failures.next() <= 2 {
+            if String(decoding: body, as: UTF8.self).contains(GitHubClient.cursor(at: 99)), failures.next() <= 2 {
                 return (502, [:], Data("bad gateway".utf8))
             }
             return try ok(fake, body)
@@ -572,14 +789,113 @@ private struct HeaderCase: Sendable, CustomTestStringConvertible {
             return (401, [:], Data())
         }
         let error = await failure(of: client)
-        #expect(error as? GitHubError == .unauthorized)
+        #expect(error as? GitHubError == .unauthorized(.saved))
         #expect(requests.count == 1)
+    }
+
+    @Test func aRejectedSavedTokenIsBlamedEvenWhenTheGitHubCLIIsLoggedIn() async {
+        let fake = FakeGitHub(prs: [pr(1, createdAt: monthStart)])
+        let saved = "tok-\(UUID().uuidString)", cli = "tok-\(UUID().uuidString)"
+        StubURLProtocol.register(saved) { _ in (401, [:], Data(#"{"message":"Bad credentials"}"#.utf8)) }
+        StubURLProtocol.register(cli) { body in try ok(fake, body) }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        let client = GitHubClient(
+            tokens: TokenProvider(override: { saved }, cli: { cli }),
+            session: URLSession(configuration: configuration), retryDelays: [], now: { now }
+        )
+        // The saved token wins over `gh`, so logging in to `gh` again would change nothing.
+        #expect(await failure(of: client) as? GitHubError == .unauthorized(.saved))
+    }
+
+    @Test(arguments: [true, false])
+    func aRefreshWithNoLoginSaysWhetherTheGitHubCLIIsThere(installed: Bool) async {
+        let client = GitHubClient(
+            tokens: TokenProvider(
+                override: { nil }, cli: { nil }, cliInstalled: { installed },
+                lifetime: .seconds(60), retryFloor: .seconds(10), now: { .now }
+            ),
+            session: .shared, retryDelays: [], now: { now }
+        )
+        #expect(await failure(of: client) as? GitHubError == (installed ? .noToken : .noGitHubCLI))
+    }
+
+    @Test func aSavedTokenWorksWithoutTheGitHubCLI() async throws {
+        let fake = FakeGitHub(prs: [pr(1, createdAt: monthStart)])
+        let saved = "tok-\(UUID().uuidString)"
+        StubURLProtocol.register(saved) { body in try ok(fake, body) }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        let client = GitHubClient(
+            tokens: TokenProvider(
+                override: { saved }, cli: { nil }, cliInstalled: { false },
+                lifetime: .seconds(60), retryFloor: .seconds(10), now: { .now }
+            ),
+            session: URLSession(configuration: configuration), retryDelays: [], now: { now }
+        )
+        let snapshot = try await client.fetchSnapshot(at: now, calendar: utc)
+        #expect(snapshot.count(for: .opened) == 1)
+    }
+
+    @Test func aRejectedTokenSaysHowToReplaceThatToken() {
+        let saved = GitHubError.unauthorized(.saved).localizedDescription
+        #expect(saved.contains("token saved in Settings"))
+        #expect(!saved.contains("gh auth login"))
+        let cli = GitHubError.unauthorized(.githubCLI).localizedDescription
+        #expect(cli.contains("`gh` login"))
+        #expect(cli.contains("Run `gh auth login`"))
     }
 
     @Test func aPlainForbiddenIsNotARateLimit() async {
         let client = http { _ in (403, [:], Data(#"{"message":"Resource not accessible"}"#.utf8)) }
         let error = await failure(of: client)
+        #expect(error as? GitHubError == .http(403, message: "Resource not accessible"))
+    }
+
+    @Test func aRefusalSaysWhatGitHubSaid() async throws {
+        let message = "Although you appear to have the correct authorization credentials, the `acme` organization has an IP allow list enabled, and your IP address is not permitted to access this resource."
+        let client = http { _ in (403, [:], Data(#"{"message":"\#(message)","documentation_url":"https://docs.github.com"}"#.utf8)) }
+        let description = try #require(await failure(of: client)?.localizedDescription)
+        #expect(description == "GitHub returned HTTP 403: \(message)")
+    }
+
+    @Test func aServerErrorKeepsGitHubsExplanationAfterTheRetriesRunOut() async {
+        let requests = Counter()
+        let message = "Something went wrong while executing your query. This may be the result of a timeout, or it could be a GitHub bug."
+        let client = http { _ in
+            _ = requests.next()
+            return (502, [:], Data(#"{"data":null,"errors":[{"message":"\#(message)"}]}"#.utf8))
+        }
+        #expect(await failure(of: client) as? GitHubError == .http(502, message: message))
+        #expect(requests.count == 3)
+    }
+
+    @Test(arguments: ["<html><body>Forbidden by policy</body></html>", "", #"{"message":"  "}"#])
+    func aRefusalWithNothingToSayGivesOnlyTheStatus(body: String) async {
+        let client = http { _ in (403, [:], Data(body.utf8)) }
+        let error = await failure(of: client)
         #expect(error as? GitHubError == .http(403))
+        #expect(error?.localizedDescription == "GitHub returned HTTP 403.")
+    }
+
+    @Test(arguments: ["<html><body>Access to this site is blocked by your network administrator.</body></html>", ""])
+    func aReplyThatIsNotJSONSaysSomethingElseAnswered(body: String) async {
+        let requests = Counter()
+        let client = http { _ in
+            _ = requests.next()
+            return (200, [:], Data(body.utf8))
+        }
+        let error = await failure(of: client)
+        #expect(error as? GitHubError == .notGitHub)
+        #expect(error?.localizedDescription.contains("network filter or proxy") == true)
+        // A filter's page doesn't go away in a few seconds.
+        #expect(requests.count == 1)
+    }
+
+    @Test func aJSONReplyOfTheWrongShapeIsNotBlamedOnTheNetwork() async {
+        let client = http { _ in (200, [:], Data(#"{"data":{"viewer":null}}"#.utf8)) }
+        let error = await failure(of: client)
+        #expect(error is DecodingError)
     }
 
     @Test func secondaryLimitWaitsForRetryAfter() async {
@@ -778,21 +1094,20 @@ private struct HeaderCase: Sendable, CustomTestStringConvertible {
             _ = requests.next()
             return (403, ["X-RateLimit-Remaining": "4000"], body)
         }
-        for _ in 0..<2 { #expect(await failure(of: client) as? GitHubError == .http(403)) }
+        for _ in 0..<2 { #expect(await failure(of: client) as? GitHubError == .http(403, message: message)) }
         #expect(requests.count == 2)
     }
 
     @Test func aSingleSignOnForbiddenOnTheLastRequestOfTheBudgetIsNotARateLimit() async {
         let requests = Counter()
         let reset = String(Int(now.addingTimeInterval(1800).timeIntervalSince1970))
-        let body = Data(
-            #"{"message":"Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization."}"#
-                .utf8)
+        let message = "Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization."
+        let body = Data(#"{"message":"\#(message)"}"#.utf8)
         let client = http { _ in
             _ = requests.next()
             return (403, ["X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset], body)
         }
-        for _ in 0..<2 { #expect(await failure(of: client) as? GitHubError == .http(403)) }
+        for _ in 0..<2 { #expect(await failure(of: client) as? GitHubError == .http(403, message: message)) }
         #expect(requests.count == 2)
     }
 
@@ -826,7 +1141,7 @@ private struct HeaderCase: Sendable, CustomTestStringConvertible {
             _ = requests.next()
             return forbidden(message, ["X-RateLimit-Remaining": "4000"])
         }
-        for _ in 0..<2 { #expect(await failure(of: client) as? GitHubError == .http(403)) }
+        for _ in 0..<2 { #expect(await failure(of: client) as? GitHubError == .http(403, message: message)) }
         #expect(requests.count == 2)
     }
 

@@ -58,6 +58,9 @@ public final class TallyStore {
     private var missedRefresh = false
     /// Counts the network coming back, so a fetch that failed while it did is tried again.
     private var networkReturns = 0
+    /// When the latest refresh failed or waited for the network, until one succeeds. Set again on every try, so
+    /// the menu bar redraws as each retry finds the numbers a little older.
+    private var stalledAt: Date?
     private var schedule: Task<Void, Never>?
     private var watchingSystem = false
     /// Read by everything that depends on today's date, so it redraws at midnight even if the refresh then fails.
@@ -121,14 +124,17 @@ public final class TallyStore {
 
     /// When the numbers were fetched. Restored numbers can be days old, so the date appears once it isn't today.
     public func updatedText(at now: Date = Date()) -> String? {
+        fetchedTime(at: now).map { "Updated \($0)" }
+    }
+
+    private func fetchedTime(at now: Date) -> String? {
         _ = dayChanges
         guard let snapshot else { return nil }
         // Both the day and the clock time are the user's own, wherever the numbers were counted.
         let fetchedToday = Calendar.current.isDate(snapshot.fetchedAt, inSameDayAs: now)
-        let time = fetchedToday
+        return fetchedToday
             ? snapshot.fetchedAt.formatted(date: .omitted, time: .shortened)
             : snapshot.fetchedAt.formatted(.dateTime.month(.abbreviated).day().hour().minute())
-        return "Updated \(time)"
     }
 
     /// Today's count, shown beside the menu bar ring.
@@ -142,12 +148,22 @@ public final class TallyStore {
         return pace.beatsDailyQuota(today: snapshot.todayCount(for: metric, at: now))
     }
 
+    /// Whether the menu bar's numbers have stopped updating, which fades them: a refresh failed, or is waiting
+    /// for the network, a whole refresh interval or more after they were fetched. A failure sooner than that is
+    /// left for the next try to put right unseen.
+    public var menuBarIsStale: Bool {
+        guard let stalledAt, let fetchedAt = currentSnapshot()?.fetchedAt else { return false }
+        return stalledAt.timeIntervalSince(fetchedAt) >= Double(refreshMinutes * 60)
+    }
+
     /// What VoiceOver reads for the menu bar item, since the image carries the numbers visually.
     public var menuBarAccessibilityLabel: String {
         let now = Date()
         guard let pace = pace(at: now) else { return "PR Tally, loading" }
         let today = "\(menuBarTitle(at: now)) today\(menuBarBeatsPace(at: now) ? ", beating the daily pace" : "")"
-        return "\(today). \(pace.count.formatted()) of \(pace.goal.formatted()) \(metric.noun). \(pace.statusText)"
+        let label = "\(today). \(pace.count.formatted()) of \(pace.goal.formatted()) \(metric.noun). \(pace.statusText)"
+        guard menuBarIsStale, let time = fetchedTime(at: now) else { return label }
+        return "\(label). Not updating since \(time)"
     }
 
     /// A failed refresh keeps the last good numbers on screen and reports the error next to them.
@@ -166,10 +182,12 @@ public final class TallyStore {
             let previous = snapshot
             snapshot = fetched
             errorMessage = nil
+            stalledAt = nil
             cache?.save(fetched)
             announceGoal(from: previous, to: fetched)
         } catch {
             errorMessage = error.localizedDescription
+            stalledAt = Date()
         }
         isRefreshing = false
         // A fetch that spanned midnight may have come back with the month that just ended, and one that failed
@@ -215,6 +233,7 @@ public final class TallyStore {
     private func waitForNetwork() {
         missedRefresh = true
         errorMessage = Self.offlineMessage
+        stalledAt = Date()
     }
 
     /// The next opening starts at the numbers, not wherever the last one ended: Settings or the PR list

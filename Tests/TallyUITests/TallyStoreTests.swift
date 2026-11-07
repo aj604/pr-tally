@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import Network
 import Observation
 import Testing
@@ -225,6 +225,82 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
         #expect(!short.isTemplate)
         #expect(short.size.width > ring.size.width)
         #expect(long.size.width > short.size.width)
+    }
+
+    @Test func menuBarFadesWhenARefreshFailsAnIntervalAfterTheLastNumbers() async {
+        let fetchedAt = Date().addingTimeInterval(-16 * 60)
+        let script = Script([
+            .success(snapshot(opened: 5, at: fetchedAt)), .failure(Offline()), .success(snapshot(opened: 6)),
+        ])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        await store.refresh()
+        #expect(!store.menuBarIsStale)
+        await store.refresh()
+        #expect(store.menuBarIsStale)
+        let time = fetchedAt.formatted(date: .omitted, time: .shortened)
+        #expect(store.menuBarAccessibilityLabel.hasSuffix(". Not updating since \(time)"))
+        await store.refresh()
+        #expect(!store.menuBarIsStale)
+        #expect(!store.menuBarAccessibilityLabel.contains("Not updating"))
+    }
+
+    @Test func aFailureSoonAfterTheLastNumbersLeavesTheMenuBarAlone() async {
+        let fetchedAt = Date().addingTimeInterval(-10 * 60)
+        let script = Script([.success(snapshot(opened: 5, at: fetchedAt)), .failure(Offline())])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        await store.refresh()
+        await store.refresh()
+        #expect(store.errorMessage == "Offline")
+        #expect(!store.menuBarIsStale)
+        store.refreshMinutes = 5
+        #expect(store.menuBarIsStale)
+    }
+
+    @Test func waitingForTheNetworkFadesOldNumbersUntilItReturns() async {
+        let script = Script([
+            .success(snapshot(opened: 5, at: Date().addingTimeInterval(-20 * 60))), .success(snapshot(opened: 6)),
+        ])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        await store.refresh()
+        await store.networkChanged(isOnline: false)
+        await store.refreshIfStale()
+        #expect(store.menuBarIsStale)
+        await store.networkChanged(isOnline: true)
+        #expect(store.count == 6)
+        #expect(!store.menuBarIsStale)
+    }
+
+    @Test func noNumbersYetIsNotFaded() async {
+        let store = TallyStore(defaults: freshDefaults()) { throw Offline() }
+        await store.refresh()
+        #expect(!store.menuBarIsStale)
+    }
+
+    /// Nothing else changes as a failing refresh is retried, yet each retry finds the numbers older.
+    @Test func eachFailedRetryRedrawsTheMenuBar() async {
+        let script = Script([.success(snapshot(opened: 5)), .failure(Offline())])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        await store.refresh()
+        await store.refresh()
+        let redrawn = Redraw()
+        withObservationTracking {
+            _ = store.menuBarIsStale
+        } onChange: {
+            redrawn.fired = true
+        }
+        await store.refresh()
+        #expect(redrawn.fired)
+    }
+
+    @Test func fadedMenuBarImageCarriesTheNumberAtReducedOpacity() {
+        let window = MonthWindow(containing: Date())
+        let pace = Pace(goal: 10, count: 6, window: window, at: window.start.addingTimeInterval(86_400))
+        let ring = MenuBarGlyph.image(for: pace)
+        let faded = MenuBarGlyph.fadedImage(for: pace, title: "12")
+        #expect(!faded.isTemplate)
+        #expect(faded.size.width > ring.size.width)
+        #expect(maxAlpha(of: ring) > 0.9)
+        #expect(maxAlpha(of: faded) < 0.5)
     }
 
     @Test func ringMatchesPaceStatus() {
@@ -883,6 +959,27 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
                 == "2 PRs merged in November, with 14 days to spare."
         )
     }
+}
+
+/// The most opaque pixel in `image`, drawn at twice its size.
+@MainActor
+private func maxAlpha(of image: NSImage) -> CGFloat {
+    let rep = NSBitmapImageRep(
+        bitmapDataPlanes: nil, pixelsWide: Int(image.size.width * 2), pixelsHigh: Int(image.size.height * 2),
+        bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+        bytesPerRow: 0, bitsPerPixel: 0
+    )!
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+    image.draw(in: NSRect(x: 0, y: 0, width: rep.pixelsWide, height: rep.pixelsHigh))
+    NSGraphicsContext.restoreGraphicsState()
+    var most: CGFloat = 0
+    for x in 0..<rep.pixelsWide {
+        for y in 0..<rep.pixelsHigh {
+            most = max(most, rep.colorAt(x: x, y: y)?.alphaComponent ?? 0)
+        }
+    }
+    return most
 }
 
 private final class Redraw: @unchecked Sendable {

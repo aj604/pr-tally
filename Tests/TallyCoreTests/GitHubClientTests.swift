@@ -166,6 +166,25 @@ private func client(_ fake: FakeGitHub) -> GitHubClient {
         #expect(await provider.token() == nil)
     }
 
+    @Test func blamesAMissingLoginOnlyWhenTheGitHubCLIIsInstalled() async {
+        let loggedOut = TokenProvider(
+            override: { nil }, cli: { nil }, cliInstalled: { true },
+            lifetime: .seconds(60), retryFloor: .seconds(10), now: { .now }
+        )
+        #expect(await loggedOut.missingLogin() == .noToken)
+        let uninstalled = TokenProvider(
+            override: { nil }, cli: { nil }, cliInstalled: { false },
+            lifetime: .seconds(60), retryFloor: .seconds(10), now: { .now }
+        )
+        #expect(await uninstalled.missingLogin() == .noGitHubCLI)
+    }
+
+    @Test func aMissingGitHubCLISaysToAddATokenInsteadOfLoggingIn() {
+        let message = GitHubError.noGitHubCLI.localizedDescription
+        #expect(message.contains("Add a token in Settings"))
+        #expect(!message.contains("gh auth login"))
+    }
+
     /// A provider whose CLI answers from `reads` in turn (repeating the last), on a clock the test moves.
     private func provider(reads: Counter, _ answers: [String?], clock: TestUptime) -> TokenProvider {
         TokenProvider(
@@ -283,6 +302,30 @@ private func client(_ fake: FakeGitHub) -> GitHubClient {
 
     @Test func runGivesUpOnAStuckCommand() {
         #expect(GitHubCLI.run("/bin/sleep", arguments: ["30"], timeout: 0.2) == nil)
+    }
+
+    @Test func looksForTheGitHubCLIWhereverAPackageManagerPutsIt() {
+        let paths = GitHubCLI.searchPaths(home: "/Users/sam", user: "sam")
+        #expect(paths.first == "/opt/homebrew/bin/gh")
+        for path in [
+            "/usr/local/bin/gh", "/opt/local/bin/gh", "/Users/sam/.nix-profile/bin/gh",
+            "/etc/profiles/per-user/sam/bin/gh", "/run/current-system/sw/bin/gh", "/Users/sam/.local/bin/gh",
+            "/usr/bin/gh",
+        ] {
+            #expect(paths.contains(path))
+        }
+    }
+
+    @Test func usesTheFirstGitHubCLIThatCanRun() throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "github-data-r3-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let notRunnable = folder.appending(path: "plain").path, runnable = folder.appending(path: "gh").path
+        FileManager.default.createFile(atPath: notRunnable, contents: Data())
+        FileManager.default.createFile(atPath: runnable, contents: Data(), attributes: [.posixPermissions: 0o755])
+        let missing = folder.appending(path: "missing").path
+        #expect(GitHubCLI.executablePath(in: [missing, notRunnable, runnable]) == runnable)
+        #expect(GitHubCLI.executablePath(in: [missing, notRunnable]) == nil)
     }
 }
 
@@ -594,6 +637,35 @@ private struct HeaderCase: Sendable, CustomTestStringConvertible {
         )
         // The saved token wins over `gh`, so logging in to `gh` again would change nothing.
         #expect(await failure(of: client) as? GitHubError == .unauthorized(.saved))
+    }
+
+    @Test(arguments: [true, false])
+    func aRefreshWithNoLoginSaysWhetherTheGitHubCLIIsThere(installed: Bool) async {
+        let client = GitHubClient(
+            tokens: TokenProvider(
+                override: { nil }, cli: { nil }, cliInstalled: { installed },
+                lifetime: .seconds(60), retryFloor: .seconds(10), now: { .now }
+            ),
+            session: .shared, retryDelays: [], now: { now }
+        )
+        #expect(await failure(of: client) as? GitHubError == (installed ? .noToken : .noGitHubCLI))
+    }
+
+    @Test func aSavedTokenWorksWithoutTheGitHubCLI() async throws {
+        let fake = FakeGitHub(prs: [pr(1, createdAt: monthStart)])
+        let saved = "tok-\(UUID().uuidString)"
+        StubURLProtocol.register(saved) { body in try ok(fake, body) }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        let client = GitHubClient(
+            tokens: TokenProvider(
+                override: { saved }, cli: { nil }, cliInstalled: { false },
+                lifetime: .seconds(60), retryFloor: .seconds(10), now: { .now }
+            ),
+            session: URLSession(configuration: configuration), retryDelays: [], now: { now }
+        )
+        let snapshot = try await client.fetchSnapshot(at: now, calendar: utc)
+        #expect(snapshot.count(for: .opened) == 1)
     }
 
     @Test func aRejectedTokenSaysHowToReplaceThatToken() {

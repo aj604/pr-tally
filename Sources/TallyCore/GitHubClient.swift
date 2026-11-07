@@ -2,6 +2,8 @@ import Foundation
 
 public enum GitHubError: Error, Equatable, LocalizedError {
     case noToken
+    /// No saved token, and no `gh` CLI to ask for a login.
+    case noGitHubCLI
     case unauthorized(TokenSource)
     /// A status GitHub doesn't answer queries with, and what GitHub said about it, if anything.
     case http(Int, message: String? = nil)
@@ -13,6 +15,9 @@ public enum GitHubError: Error, Equatable, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .noToken: "No GitHub login found. Run `gh auth login` or add a token in Settings."
+        case .noGitHubCLI:
+            "No GitHub login found, and the `gh` CLI isn't installed where PRTally looks "
+                + "(Homebrew, MacPorts, Nix or ~/.local/bin). Add a token in Settings."
         case .unauthorized(.saved):
             "GitHub rejected the token saved in Settings, which may have expired. "
                 + "Save a new one there, or remove it to use your `gh` login."
@@ -70,7 +75,7 @@ public struct GitHubClient: Sendable {
     init(tokens: TokenProvider, session: URLSession, retryDelays: [Duration], now: @escaping @Sendable () -> Date) {
         let gate = GitHubRateLimitGate()
         let open: @Sendable () async throws -> GraphQLTransport = {
-            guard let (token, source) = await tokens.credential() else { throw GitHubError.noToken }
+            guard let (token, source) = await tokens.credential() else { throw await tokens.missingLogin() }
             try await gate.check(now: now(), token: token)
             return { body in
                 try await gate.check(now: now(), token: token)

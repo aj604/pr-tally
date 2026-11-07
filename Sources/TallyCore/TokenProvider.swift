@@ -23,6 +23,7 @@ public actor TokenProvider {
 
     private let override: @Sendable () -> String?
     private let cli: @Sendable () -> String?
+    private let cliInstalled: @Sendable () -> Bool
     private let lifetime: Duration
     private let retryFloor: Duration
     private let now: @Sendable () -> ContinuousClock.Instant
@@ -35,20 +36,22 @@ public actor TokenProvider {
         cli: @escaping @Sendable () -> String? = { GitHubCLI.authToken() }
     ) {
         self.init(
-            override: override, cli: cli, lifetime: Self.cliLifetime, retryFloor: Self.retryFloor,
-            now: { .now }
+            override: override, cli: cli, cliInstalled: { GitHubCLI.executablePath() != nil },
+            lifetime: Self.cliLifetime, retryFloor: Self.retryFloor, now: { .now }
         )
     }
 
     init(
         override: @escaping @Sendable () -> String?,
         cli: @escaping @Sendable () -> String?,
+        cliInstalled: @escaping @Sendable () -> Bool = { true },
         lifetime: Duration,
         retryFloor: Duration,
         now: @escaping @Sendable () -> ContinuousClock.Instant
     ) {
         self.override = override
         self.cli = cli
+        self.cliInstalled = cliInstalled
         self.lifetime = lifetime
         self.retryFloor = retryFloor
         self.now = now
@@ -76,6 +79,12 @@ public actor TokenProvider {
         return cached.map { ($0, .githubCLI) }
     }
 
+    /// Why there's no token: `gh` has no login, or there's no `gh` to ask. Telling someone without `gh`
+    /// to run `gh auth login` sends them nowhere.
+    func missingLogin() -> GitHubError {
+        cliInstalled() ? .noToken : .noGitHubCLI
+    }
+
     /// Forgets the CLI token so the next request reads it again.
     public func invalidate() {
         cached = nil
@@ -85,12 +94,28 @@ public actor TokenProvider {
 }
 
 public enum GitHubCLI {
-    /// Finder-launched apps get a minimal PATH, so look where `gh` is normally installed.
-    private static let searchPaths = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"]
+    /// Finder-launched apps get a minimal PATH, so look where package managers install `gh`.
+    static func searchPaths(home: String = NSHomeDirectory(), user: String = NSUserName()) -> [String] {
+        [
+            // Homebrew, Apple silicon then Intel.
+            "/opt/homebrew/bin/gh", "/usr/local/bin/gh",
+            // MacPorts.
+            "/opt/local/bin/gh",
+            // Nix: a user profile, home-manager under nix-darwin, then nix-darwin's system packages.
+            "\(home)/.nix-profile/bin/gh", "/etc/profiles/per-user/\(user)/bin/gh", "/run/current-system/sw/bin/gh",
+            // A release unpacked by hand, or installed by a tool that links into it.
+            "\(home)/.local/bin/gh",
+            "/usr/bin/gh",
+        ]
+    }
+
+    /// Where `gh` is, if it's in any of `paths`.
+    static func executablePath(in paths: [String] = searchPaths()) -> String? {
+        paths.first(where: FileManager.default.isExecutableFile(atPath:))
+    }
 
     public static func authToken() -> String? {
-        let manager = FileManager.default
-        guard let path = searchPaths.first(where: manager.isExecutableFile(atPath:)) else { return nil }
+        guard let path = executablePath() else { return nil }
         return run(path, arguments: ["auth", "token"])
     }
 

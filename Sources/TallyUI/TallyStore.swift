@@ -289,7 +289,7 @@ public final class TallyStore {
             let wakes = NSWorkspace.shared.notificationCenter.notifications(named: NSWorkspace.didWakeNotification)
             for await _ in wakes.map({ _ in () }) {
                 try? await Task.sleep(for: .seconds(5))
-                await self?.refreshIfStale()
+                self?.systemWoke()
             }
         }
         Task { [weak self] in
@@ -308,6 +308,18 @@ public final class TallyStore {
         }
     }
 
+    /// Once the network has had a few seconds after a wake, the schedule starts over: one refresh, and a retry a
+    /// minute later if that fails. Its clock stops while the Mac sleeps, so it doesn't also fire as the lid opens.
+    func systemWoke() {
+        // Hours asleep aren't hours of failing, so a stall the menu bar wasn't showing yet starts over. One it was
+        // showing stays shown rather than flickering back for two minutes.
+        if !menuBarIsStale {
+            stalledAt = nil
+            stalledSince = nil
+        }
+        if schedule != nil { startSchedule() }
+    }
+
     private func startSchedule() {
         schedule?.cancel()
         schedule = Task { [weak self] in
@@ -315,7 +327,7 @@ public final class TallyStore {
                 await self.refreshIfStale()
                 // Retry failures soon; the network is often just coming back.
                 let delay: Duration = self.errorMessage == nil ? .seconds(self.refreshMinutes * 60) : .seconds(60)
-                try? await Task.sleep(for: delay)
+                try? await Task.sleep(for: delay, clock: .suspending)
             }
         }
     }

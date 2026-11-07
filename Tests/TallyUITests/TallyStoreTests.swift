@@ -292,8 +292,8 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
         #expect(!store.menuBarIsStale)
     }
 
-    /// Waking runs the overdue scheduled try at once, often before the network is up. Numbers from last night are
-    /// long past due, but that try and its retry get the same two minutes as any other.
+    /// The try on waking can still beat the network back. Numbers from last night are long past due, but that try
+    /// and its retry get the same two minutes as any other.
     @Test func aFailureOnWakingHoursLaterLeavesTheMenuBarAloneForItsRetries() async {
         let script = Script([.success(snapshot(opened: 5, at: Date().addingTimeInterval(-8 * 3600))), .failure(Offline())])
         let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
@@ -305,6 +305,40 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
         await store.refresh()
         #expect(!store.menuBarIsStale)
         clock.advance(60)
+        await store.refresh()
+        #expect(store.menuBarIsStale)
+    }
+
+    @Test func aFailureBeforeSleepingDoesNotFadeTheMenuBarOnTheFirstFailureAfterWaking() async {
+        let script = Script([.success(snapshot(opened: 5, at: Date().addingTimeInterval(-8 * 3600))), .failure(Offline())])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        let clock = TestClock(store)
+        await store.refresh()
+        await store.refresh()
+        clock.advance(8 * 3600)
+        store.systemWoke()
+        await store.refresh()
+        #expect(!store.menuBarIsStale)
+        clock.advance(60)
+        await store.refresh()
+        #expect(!store.menuBarIsStale)
+        clock.advance(60)
+        await store.refresh()
+        #expect(store.menuBarIsStale)
+    }
+
+    @Test func aMenuBarAlreadyFadedStaysFadedThroughAWake() async {
+        let script = Script([.success(snapshot(opened: 5, at: Date().addingTimeInterval(-8 * 3600))), .failure(Offline())])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        let clock = TestClock(store)
+        await store.refresh()
+        await store.refresh()
+        clock.advance(120)
+        await store.refresh()
+        #expect(store.menuBarIsStale)
+        clock.advance(8 * 3600)
+        store.systemWoke()
+        #expect(store.menuBarIsStale)
         await store.refresh()
         #expect(store.menuBarIsStale)
     }
@@ -899,6 +933,35 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
         store.refreshMinutes = 5
         try await Task.sleep(for: .milliseconds(200))
         #expect(await script.calls == 1)
+    }
+
+    /// The schedule's clock stops while the Mac sleeps, so waking is what refreshes, by starting it over.
+    @Test func wakingStartsTheScheduleOverWithARefresh() async throws {
+        let script = Script([.success(snapshot(opened: 1, at: Date().addingTimeInterval(-10 * 60)))])
+        let store = TallyStore(defaults: freshDefaults(), network: online) { try await script.next() }
+        store.start()
+        while await script.calls < 1 { try await Task.sleep(for: .milliseconds(10)) }
+        store.systemWoke()
+        for _ in 0..<200 where await script.calls < 2 { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(await script.calls == 2)
+    }
+
+    @Test func wakingLeavesNumbersJustFetchedAlone() async throws {
+        let script = Script([.success(snapshot(opened: 1))])
+        let store = TallyStore(defaults: freshDefaults(), network: online) { try await script.next() }
+        store.start()
+        while await script.calls < 1 { try await Task.sleep(for: .milliseconds(10)) }
+        store.systemWoke()
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await script.calls == 1)
+    }
+
+    @Test func wakingAStoreThatWasNeverStartedFetchesNothing() async throws {
+        let script = Script([.success(snapshot(opened: 1))])
+        let store = TallyStore(defaults: freshDefaults(), network: online) { try await script.next() }
+        store.systemWoke()
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await script.calls == 0)
     }
 
     // MARK: Milestones

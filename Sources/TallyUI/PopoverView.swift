@@ -25,6 +25,9 @@ public struct PopoverView: View {
                 MonthCharts(snapshot: snapshot, metric: store.metric, goal: store.goal, now: Date()) { day in
                     showPullRequests(PullRequestFocus(day: day))
                 }
+                MergeFunnelSummary(funnel: snapshot.mergeFunnel) {
+                    showPullRequests(PullRequestFocus(metric: .opened, notMerged: true))
+                }
                 TopRepositories(repositories: snapshot.topRepositories(for: store.metric)) { repository in
                     showPullRequests(PullRequestFocus(repository: repository))
                 }
@@ -128,11 +131,24 @@ public struct PopoverView: View {
                 Stat(title: "On track for", value: pace.projected.formatted())
             }
             GridRow {
-                let other: PRMetric = store.metric == .opened ? .merged : .opened
-                Stat(title: other.title, value: snapshot.count(for: other).formatted())
+                otherMetric(snapshot)
                 Stat(title: "Days left", value: pace.daysRemaining.formatted())
                 Stat(title: "Contributions", value: snapshot.totalContributions.formatted())
             }
+        }
+    }
+
+    /// The count the goal doesn't follow, listing its PRs when clicked.
+    @ViewBuilder private func otherMetric(_ snapshot: MonthSnapshot) -> some View {
+        let other: PRMetric = store.metric == .opened ? .merged : .opened
+        let count = snapshot.count(for: other)
+        let stat = Stat(title: other.title, value: count.formatted())
+        if count > 0 {
+            Button { showPullRequests(PullRequestFocus(metric: other)) } label: { stat.contentShape(Rectangle()) }
+                .buttonStyle(.plain)
+                .help("List the \(count.formatted()) \(other.noun)")
+        } else {
+            stat
         }
     }
 

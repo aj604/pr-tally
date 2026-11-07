@@ -51,7 +51,6 @@ struct MonthCharts: View {
                 }
                 dailyBars.frame(height: 62)
             }
-            MergeFunnelSummary(funnel: snapshot.mergeFunnel)
         }
     }
 
@@ -223,38 +222,50 @@ private struct LegendKey: View {
 }
 
 /// How much of what was opened this month has merged, kept apart from merges of older PRs.
-private struct MergeFunnelSummary: View {
+/// Clicking it asks for the PRs not merged yet, when there are any.
+struct MergeFunnelSummary: View {
     let funnel: MergeFunnel
+    var selectNotMerged: () -> Void = {}
 
     var body: some View {
         if !funnel.isEmpty {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("Opened this month").font(.caption.weight(.medium))
-                    Spacer()
-                    Text(funnel.opened > 0 ? "\(funnel.openedAndMerged.formatted()) of \(funnel.opened.formatted()) merged" : "None yet")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                }
-                if let rate = funnel.mergeRate {
-                    GeometryReader { geometry in
-                        ZStack(alignment: .leading) {
-                            Capsule().fill(.quaternary)
-                            Capsule()
-                                .fill(Color.accentColor)
-                                .frame(width: rate > 0 ? max(geometry.size.width * rate, 4) : 0)
-                        }
-                    }
-                    .frame(height: 4)
-                    .help("\(funnel.notMerged.formatted()) not merged, either still open or closed")
-                }
-                if let detail {
-                    Text(detail).font(.caption).foregroundStyle(.secondary).monospacedDigit()
-                }
+            if funnel.notMerged > 0 {
+                Button(action: selectNotMerged) { summary.contentShape(Rectangle()) }
+                    .buttonStyle(.plain)
+                    .help("List the \(funnel.notMerged.formatted()) opened this month that haven't merged")
+            } else {
+                summary
             }
-            .accessibilityElement(children: .combine)
         }
+    }
+
+    private var summary: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Opened this month").font(.caption.weight(.medium))
+                Spacer()
+                Text(funnel.opened > 0 ? "\(funnel.openedAndMerged.formatted()) of \(funnel.opened.formatted()) merged" : "None yet")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            if let rate = funnel.mergeRate {
+                GeometryReader { geometry in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(.quaternary)
+                        Capsule()
+                            .fill(Color.accentColor)
+                            .frame(width: rate > 0 ? max(geometry.size.width * rate, 4) : 0)
+                    }
+                }
+                .frame(height: 4)
+                .help("\(funnel.notMerged.formatted()) not merged, either still open or closed")
+            }
+            if let detail {
+                Text(detail).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            }
+        }
+        .accessibilityElement(children: .combine)
     }
 
     private var detail: String? {

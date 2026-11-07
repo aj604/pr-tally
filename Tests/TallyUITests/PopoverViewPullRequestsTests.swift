@@ -119,4 +119,29 @@ private func snapshot(_ prs: [PullRequest], now: Date) -> MonthSnapshot {
         #expect(firstAtNoonUTC.formatted(utc) == window.dayTitle(0))
         #expect(window.dayTitle(29) != window.dayTitle(0))
     }
+
+    @Test func theFunnelListsOnlyWhatWasOpenedThisMonthAndHasntMerged() {
+        let snapshot = snapshot(
+            [
+                pr("waiting", opened: date(3, 9)), pr("landed", opened: date(4, 9), merged: date(5, 9)),
+                pr("today", opened: date(12, 9), in: "acme/infra"), pr("closed", opened: date(8, 9)),
+            ],
+            now: now
+        )
+        let month = snapshot.listedPullRequests(for: .opened, scope: .month, notMerged: true, at: now)
+        #expect(month.map(\.id) == ["today", "closed", "waiting"])
+        #expect(month.count == snapshot.mergeFunnel.notMerged)
+        // It narrows whatever else the list is narrowed to.
+        #expect(snapshot.listedPullRequests(for: .opened, scope: .today, notMerged: true, at: now).map(\.id) == ["today"])
+        #expect(
+            snapshot.listedPullRequests(for: .opened, scope: .month, repository: "me/app", notMerged: true, at: now)
+                .map(\.id) == ["closed", "waiting"]
+        )
+        #expect(snapshot.listedPullRequests(for: .opened, scope: .day(3), notMerged: true, at: now).isEmpty)
+    }
+
+    @Test func theFunnelOpensTheWholeMonthEvenWhenTodayHasPRs() {
+        let busy = snapshot([pr("a", opened: date(2, 9)), pr("b", opened: date(12, 9))], now: now)
+        #expect(PullRequestScope.opening(for: .init(metric: .opened, notMerged: true), in: busy, metric: .opened, at: now) == .month)
+    }
 }

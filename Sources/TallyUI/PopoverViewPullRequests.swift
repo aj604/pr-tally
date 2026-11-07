@@ -11,34 +11,40 @@ enum PullRequestScope: Hashable {
     static let pickable: [PullRequestScope] = [.today, .month]
 
     /// Where the list opens: on a day picked from the charts (as Today when it is today), on the whole month for a
-    /// repository picked from the top repos, and otherwise on what the menu bar number counts unless today has nothing yet.
+    /// repository picked from the top repos or the PRs not merged yet, and otherwise on what the menu bar number counts
+    /// unless today has nothing yet.
     static func opening(for focus: PullRequestFocus, in snapshot: MonthSnapshot, metric: PRMetric, at now: Date) -> Self {
         if let day = focus.day { return day == snapshot.window.dayIndex(of: now) ? .today : .day(day) }
-        if focus.repository != nil { return .month }
+        if focus.repository != nil || focus.notMerged { return .month }
         return snapshot.todayCount(for: metric, at: now) > 0 ? .today : .month
     }
 }
 
-/// What the summary asked the pull request list to narrow to: a day from the charts or a repository from the top repos.
+/// What the summary asked the pull request list to narrow to: a day from the charts, a repository from the top repos,
+/// or the PRs opened this month that haven't merged, from the merge funnel.
 struct PullRequestFocus: Equatable {
     var day: Int?
     var repository: String?
+    /// The count to list when it isn't the one the goal counts, as from the other metric's figure.
+    var metric: PRMetric?
+    var notMerged = false
 }
 
 extension MonthSnapshot {
     /// The pull requests behind a count, newest first, by the date the metric counts them on, from one repository
-    /// when `repository` is given.
+    /// when `repository` is given. With `notMerged`, only those the merge funnel counts as not merged.
     func listedPullRequests(
-        for metric: PRMetric, scope: PullRequestScope, repository: String? = nil, at now: Date
+        for metric: PRMetric, scope: PullRequestScope, repository: String? = nil, notMerged: Bool = false, at now: Date
     ) -> [PullRequest] {
         func counted(_ pr: PullRequest) -> Date? { metric == .opened ? pr.createdAt : pr.mergedAt }
         let today = window.dayIndex(of: now)
+        let waiting = notMerged ? Set(notMergedPullRequests.map(\.id)) : nil
         return pullRequests(for: metric)
             .compactMap { pr in counted(pr).map { (pr, $0) } }
             .filter { pr, date in
-                guard window.contains(date), repository.map({ pr.repository.nameWithOwner == $0 }) ?? true else {
-                    return false
-                }
+                guard window.contains(date), repository.map({ pr.repository.nameWithOwner == $0 }) ?? true,
+                    waiting?.contains(pr.id) ?? true
+                else { return false }
                 switch scope {
                 case .month: return true
                 case .today: return window.dayIndex(of: date) == today
@@ -66,17 +72,23 @@ struct PullRequestList: View {
     let now: Date
     @State private var scope: PullRequestScope
     @State private var repository: String?
+    @State private var notMerged: Bool
 
+    /// `metric` is the one the goal counts; the focus can ask for the other.
     init(snapshot: MonthSnapshot, metric: PRMetric, now: Date, focus: PullRequestFocus = .init()) {
+        let metric = focus.metric ?? metric
         self.snapshot = snapshot
         self.metric = metric
         self.now = now
         _scope = State(initialValue: .opening(for: focus, in: snapshot, metric: metric, at: now))
         _repository = State(initialValue: focus.repository)
+        _notMerged = State(initialValue: focus.notMerged)
     }
 
     var body: some View {
-        let pullRequests = snapshot.listedPullRequests(for: metric, scope: scope, repository: repository, at: now)
+        let pullRequests = snapshot.listedPullRequests(
+            for: metric, scope: scope, repository: repository, notMerged: notMerged, at: now
+        )
         VStack(alignment: .leading, spacing: 10) {
             // A picked day selects neither segment; its filter below says what is showing.
             Picker("Show", selection: $scope) {
@@ -112,7 +124,7 @@ struct PullRequestList: View {
 
     @ViewBuilder private var filters: some View {
         let day: Int? = if case .day(let day) = scope { day } else { nil }
-        if day != nil || repository != nil {
+        if day != nil || repository != nil || notMerged {
             HStack(spacing: 6) {
                 if let day {
                     FilterChip(title: snapshot.window.dayTitle(day), help: "Show the whole month") { scope = .month }
@@ -120,12 +132,22 @@ struct PullRequestList: View {
                 if let repository {
                     FilterChip(title: repository, help: "Show every repository") { self.repository = nil }
                 }
+                if notMerged {
+                    FilterChip(title: "Not merged", help: "Show merged PRs too") { notMerged = false }
+                }
             }
         }
     }
 
     private var emptyText: String {
         let prs = repository.map { "\($0) PRs" } ?? "PRs"
+        if notMerged {
+            return switch scope {
+            case .today: "No unmerged \(prs) opened today."
+            case .month: "No unmerged \(prs) opened this month."
+            case .day(let day): "No unmerged \(prs) opened on \(snapshot.window.dayTitle(day))."
+            }
+        }
         return switch scope {
         case .today: "No \(prs) \(metricVerb) today yet."
         case .month: "No \(prs) \(metricVerb) this month."

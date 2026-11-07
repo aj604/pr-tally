@@ -65,7 +65,7 @@ swift run PopoverSnapshot out.png [dark]      # render the popover with live dat
 swift run PopoverSnapshot out.png <mode>      # render or run a fixture, with no network or login
 ```
 
-The fixture modes are `rollover` (waiting for a new month), `overview`, `drilldown` (the PR list), `menubar` (the ring's states) and `milestone`, which prints what the goal notification would say rather than writing an image.
+The fixture modes are `rollover` (waiting for a new month), `overview`, `drilldown` (the PR list), `menubar` (the ring's states, faded too, on light and dark menu bars) and `milestone`, which prints what the goal notification would say rather than writing an image.
 
 On macOS 27, `swift test` and `swift run` fail with `plugin for module 'SwiftUIMacros' not found` under the Command Line Tools. Run `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`, or prefix the command with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`.
 

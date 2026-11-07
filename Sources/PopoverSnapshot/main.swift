@@ -41,27 +41,39 @@ func renderPopover(to path: String, scheme: ColorScheme) async throws {
     try write(view, to: path)
 }
 
-/// Every ring state on light and dark menu bars, using no network.
+/// Every ring state on light and dark menu bars, then the faded look of numbers that stopped updating, using no network.
 @MainActor
 func renderMenuBar(to path: String) throws {
     let window = MonthWindow(containing: Date())
     let middle = window.start.addingTimeInterval(window.end.timeIntervalSince(window.start) / 2)
-    let states: [(String, Bool, Pace?)] = [
-        ("–", false, nil),
-        ("12", false, Pace(goal: 1000, count: 83, window: window, at: window.start.addingTimeInterval(4 * 86_400))),
-        ("41", true, Pace(goal: 1000, count: 300, window: window, at: middle)),
-        ("9", false, Pace(goal: 1000, count: 700, window: window, at: middle)),
-        ("35", true, Pace(goal: 1000, count: 1042, window: window, at: middle)),
+    enum Look { case plain, green, faded }
+    let early = Pace(goal: 1000, count: 83, window: window, at: window.start.addingTimeInterval(4 * 86_400))
+    let states: [(String, Look, Pace?)] = [
+        ("–", .plain, nil),
+        ("12", .plain, early),
+        ("41", .green, Pace(goal: 1000, count: 300, window: window, at: middle)),
+        ("9", .plain, Pace(goal: 1000, count: 700, window: window, at: middle)),
+        ("35", .green, Pace(goal: 1000, count: 1042, window: window, at: middle)),
+        ("–", .faded, nil),
+        ("12", .faded, early),
     ]
-    func bar(_ background: Color, _ text: Color) -> some View {
+    // The glyphs draw in the label color, which a menu bar resolves from its own appearance.
+    func drawn(_ image: NSImage, _ appearance: NSAppearance.Name) -> NSImage {
+        NSImage(size: image.size, flipped: false) { rect in
+            NSAppearance(named: appearance)!.performAsCurrentDrawingAppearance { image.draw(in: rect) }
+            return true
+        }
+    }
+    func bar(_ background: Color, _ text: Color, _ appearance: NSAppearance.Name) -> some View {
         HStack(spacing: 16) {
             ForEach(states.indices, id: \.self) { index in
-                let (title, beatingPace, pace) = states[index]
+                let (title, look, pace) = states[index]
                 HStack(spacing: 4) {
-                    if beatingPace {
-                        Image(nsImage: MenuBarGlyph.image(for: pace, greenTitle: title))
-                    } else {
-                        Image(nsImage: MenuBarGlyph.image(for: pace))
+                    switch look {
+                    case .green: Image(nsImage: drawn(MenuBarGlyph.image(for: pace, greenTitle: title), appearance))
+                    case .faded: Image(nsImage: drawn(MenuBarGlyph.fadedImage(for: pace, title: title), appearance))
+                    case .plain:
+                        Image(nsImage: drawn(MenuBarGlyph.image(for: pace), appearance))
                         Text(title).monospacedDigit().foregroundStyle(text)
                     }
                 }
@@ -72,7 +84,7 @@ func renderMenuBar(to path: String) throws {
         .frame(height: 24)
         .background(background)
     }
-    try write(VStack(spacing: 0) { bar(Color(white: 0.93), .black); bar(Color(white: 0.13), .white) }, to: path)
+    try write(VStack(spacing: 0) { bar(Color(white: 0.93), .black, .aqua); bar(Color(white: 0.13), .white, .darkAqua) }, to: path)
 }
 
 private struct Offline: LocalizedError {

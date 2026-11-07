@@ -1,4 +1,5 @@
-import Foundation
+import AppKit
+import Network
 import Observation
 import Testing
 import TallyCore
@@ -17,6 +18,19 @@ private func snapshot(opened: Int, at now: Date = Date()) -> MonthSnapshot {
     }
     return MonthSnapshot(
         login: "me", window: MonthWindow(containing: now), opened: prs, merged: [], totalContributions: 0, fetchedAt: now
+    )
+}
+
+private func snapshot(opened: Int, merged: Int, at now: Date = Date()) -> MonthSnapshot {
+    let base = snapshot(opened: opened, at: now)
+    let prs = (0..<merged).map {
+        PullRequest(
+            id: "m\($0)", title: "", url: URL(string: "https://github.com")!, createdAt: now, mergedAt: now,
+            repository: .init(nameWithOwner: "me/app")
+        )
+    }
+    return MonthSnapshot(
+        login: "me", window: base.window, opened: base.opened, merged: prs, totalContributions: 0, fetchedAt: now
     )
 }
 
@@ -113,6 +127,9 @@ private actor Gate {
         waiters = []
     }
 }
+
+/// A network that is up and stays up, so started stores don't depend on this machine's.
+private let online = NetworkStatus { AsyncStream { $0.yield(true) } }
 
 private let october31 = Calendar.current.date(from: DateComponents(year: 2026, month: 10, day: 31, hour: 18))!
 
@@ -221,6 +238,203 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
         #expect(!short.isTemplate)
         #expect(short.size.width > ring.size.width)
         #expect(long.size.width > short.size.width)
+    }
+
+    @Test func menuBarFadesWhenRefreshesKeepFailingAnIntervalAfterTheLastNumbers() async {
+        let fetchedAt = Date().addingTimeInterval(-20 * 60)
+        let script = Script([
+            .success(snapshot(opened: 5, at: fetchedAt)), .failure(Offline()), .failure(Offline()), .failure(Offline()),
+            .success(snapshot(opened: 6)),
+        ])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        let clock = TestClock(store)
+        await store.refresh()
+        #expect(!store.menuBarIsStale)
+        await store.refresh()
+        #expect(!store.menuBarIsStale)
+        clock.advance(60)
+        await store.refresh()
+        #expect(!store.menuBarIsStale)
+        clock.advance(60)
+        await store.refresh()
+        #expect(store.menuBarIsStale)
+        let time = fetchedAt.formatted(date: .omitted, time: .shortened)
+        #expect(store.menuBarAccessibilityLabel.hasSuffix(". Not updating since \(time)"))
+        await store.refresh()
+        #expect(!store.menuBarIsStale)
+        #expect(!store.menuBarAccessibilityLabel.contains("Not updating"))
+    }
+
+    @Test func aFailureSoonAfterTheLastNumbersLeavesTheMenuBarAlone() async {
+        let fetchedAt = Date().addingTimeInterval(-10 * 60)
+        let script = Script([.success(snapshot(opened: 5, at: fetchedAt)), .failure(Offline())])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        let clock = TestClock(store)
+        await store.refresh()
+        await store.refresh()
+        clock.advance(120)
+        await store.refresh()
+        #expect(store.errorMessage == "Offline")
+        #expect(!store.menuBarIsStale)
+        store.refreshMinutes = 5
+        #expect(store.menuBarIsStale)
+    }
+
+    /// The schedule's own try comes just over an interval after the numbers were fetched, so one failure there
+    /// is the minute-long blip its retry is for.
+    @Test func aFailedScheduledRefreshLeavesTheMenuBarAloneForItsRetry() async {
+        let fetchedAt = Date().addingTimeInterval(-(15 * 60 + 5))
+        let script = Script([.success(snapshot(opened: 5, at: fetchedAt)), .failure(Offline())])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        await store.refresh()
+        await store.refreshIfStale()
+        #expect(await script.calls == 2)
+        #expect(!store.menuBarIsStale)
+    }
+
+    /// The try on waking can still beat the network back. Numbers from last night are long past due, but that try
+    /// and its retry get the same two minutes as any other.
+    @Test func aFailureOnWakingHoursLaterLeavesTheMenuBarAloneForItsRetries() async {
+        let script = Script([.success(snapshot(opened: 5, at: Date().addingTimeInterval(-8 * 3600))), .failure(Offline())])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        let clock = TestClock(store)
+        await store.refresh()
+        await store.refresh()
+        #expect(!store.menuBarIsStale)
+        clock.advance(60)
+        await store.refresh()
+        #expect(!store.menuBarIsStale)
+        clock.advance(60)
+        await store.refresh()
+        #expect(store.menuBarIsStale)
+    }
+
+    @Test func aFailureBeforeSleepingDoesNotFadeTheMenuBarOnTheFirstFailureAfterWaking() async {
+        let script = Script([.success(snapshot(opened: 5, at: Date().addingTimeInterval(-8 * 3600))), .failure(Offline())])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        let clock = TestClock(store)
+        await store.refresh()
+        await store.refresh()
+        clock.advance(8 * 3600)
+        store.systemWoke()
+        await store.refresh()
+        #expect(!store.menuBarIsStale)
+        clock.advance(60)
+        await store.refresh()
+        #expect(!store.menuBarIsStale)
+        clock.advance(60)
+        await store.refresh()
+        #expect(store.menuBarIsStale)
+    }
+
+    @Test func aMenuBarAlreadyFadedStaysFadedThroughAWake() async {
+        let script = Script([.success(snapshot(opened: 5, at: Date().addingTimeInterval(-8 * 3600))), .failure(Offline())])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        let clock = TestClock(store)
+        await store.refresh()
+        await store.refresh()
+        clock.advance(120)
+        await store.refresh()
+        #expect(store.menuBarIsStale)
+        clock.advance(8 * 3600)
+        store.systemWoke()
+        #expect(store.menuBarIsStale)
+        await store.refresh()
+        #expect(store.menuBarIsStale)
+    }
+
+    @Test func aGoodRefreshStartsTheTwoMinutesOver() async {
+        let lastNight = Date().addingTimeInterval(-8 * 3600)
+        let script = Script([
+            .success(snapshot(opened: 5, at: lastNight)), .failure(Offline()), .success(snapshot(opened: 5, at: lastNight)),
+            .failure(Offline()),
+        ])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        let clock = TestClock(store)
+        await store.refresh()
+        await store.refresh()
+        clock.advance(60)
+        await store.refresh()
+        clock.advance(120)
+        await store.refresh()
+        #expect(store.errorMessage == "Offline")
+        #expect(!store.menuBarIsStale)
+    }
+
+    @Test func waitingForTheNetworkFadesOldNumbersUntilItReturns() async {
+        let script = Script([
+            .success(snapshot(opened: 5, at: Date().addingTimeInterval(-25 * 60))), .success(snapshot(opened: 6)),
+        ])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        let clock = TestClock(store)
+        await store.refresh()
+        await store.networkChanged(isOnline: false)
+        await store.refreshIfStale()
+        #expect(!store.menuBarIsStale)
+        clock.advance(120)
+        await store.refreshIfStale()
+        #expect(store.menuBarIsStale)
+        await store.networkChanged(isOnline: true)
+        #expect(store.count == 6)
+        #expect(!store.menuBarIsStale)
+    }
+
+    @Test func withNoNumbersTheDashFadesOnceRefreshesHaveFailedForTwoMinutes() async {
+        let store = TallyStore(defaults: freshDefaults()) { throw Offline() }
+        let clock = TestClock(store)
+        await store.refresh()
+        clock.advance(60)
+        await store.refresh()
+        #expect(!store.menuBarIsStale)
+        #expect(store.menuBarAccessibilityLabel == "PR Tally, loading")
+        clock.advance(60)
+        await store.refresh()
+        #expect(store.menuBarIsStale)
+        #expect(store.menuBarTitle() == "–")
+        #expect(store.menuBarAccessibilityLabel == "PR Tally, not updating")
+    }
+
+    /// A new month that can't be fetched shows "–" like one that is loading, so it fades and says when the
+    /// numbers last updated.
+    @Test func lastMonthsNumbersFadeTheDashAndSayWhenTheyLastUpdated() async {
+        let (cache, _) = freshCache()
+        cache.save(snapshot(opened: 40, at: october31))
+        let store = TallyStore(defaults: freshDefaults(), cache: cache) { throw Offline() }
+        let clock = TestClock(store)
+        await store.refresh()
+        clock.advance(120)
+        await store.refresh()
+        #expect(store.menuBarTitle() == "–")
+        #expect(store.menuBarIsStale)
+        let time = october31.formatted(.dateTime.month(.abbreviated).day().hour().minute())
+        #expect(store.menuBarAccessibilityLabel == "PR Tally, not updating since \(time)")
+    }
+
+    /// Nothing else changes as a failing refresh is retried, yet each retry finds the numbers older.
+    @Test func eachFailedRetryRedrawsTheMenuBar() async {
+        let script = Script([.success(snapshot(opened: 5)), .failure(Offline())])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        await store.refresh()
+        await store.refresh()
+        let redrawn = Redraw()
+        withObservationTracking {
+            _ = store.menuBarIsStale
+        } onChange: {
+            redrawn.fired = true
+        }
+        await store.refresh()
+        #expect(redrawn.fired)
+    }
+
+    @Test func fadedMenuBarImageCarriesTheNumberAtReducedOpacity() {
+        let window = MonthWindow(containing: Date())
+        let pace = Pace(goal: 10, count: 6, window: window, at: window.start.addingTimeInterval(86_400))
+        let ring = MenuBarGlyph.image(for: pace)
+        let faded = MenuBarGlyph.fadedImage(for: pace, title: "12")
+        #expect(!faded.isTemplate)
+        #expect(faded.size.width > ring.size.width)
+        #expect(maxAlpha(of: ring) > 0.9)
+        #expect(maxAlpha(of: faded) < 0.5)
     }
 
     @Test func ringMatchesPaceStatus() {
@@ -347,7 +561,7 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
 
     @Test func dayChangeNotificationRefreshes() async throws {
         let script = Script([.success(snapshot(opened: 1))])
-        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        let store = TallyStore(defaults: freshDefaults(), network: online) { try await script.next() }
         store.start()
         while await script.calls < 1 { try await Task.sleep(for: .milliseconds(10)) }
         // The watcher subscribes on its own task, so keep posting until it hears one.
@@ -543,7 +757,7 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
 
     @Test func timeZoneChangeRedrawsAndRefreshes() async throws {
         let script = Script([.success(snapshot(opened: 1))])
-        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        let store = TallyStore(defaults: freshDefaults(), network: online) { try await script.next() }
         store.start()
         while await script.calls < 1 { try await Task.sleep(for: .milliseconds(10)) }
         for _ in 0..<200 where await script.calls < 2 {
@@ -554,7 +768,7 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
     }
 
     @Test func timeZoneChangeRedrawsTheMenuBarEvenWhenTheRefreshFails() async throws {
-        let store = TallyStore(defaults: freshDefaults()) { throw Offline() }
+        let store = TallyStore(defaults: freshDefaults(), network: online) { throw Offline() }
         store.start()
         let redrawn = Redraw()
         withObservationTracking {
@@ -583,6 +797,214 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
         await inFlight.value
         #expect(await script.calls == 2)
         #expect(store.currentSnapshot()?.opened.count == 2)
+    }
+
+    // MARK: Network
+
+    @Test func openingThePopoverOfflineWaitsForTheNetworkInsteadOfFailing() async {
+        let script = Script([.success(snapshot(opened: 3))])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        await store.networkChanged(isOnline: false)
+        await store.refreshIfStale()
+        #expect(await script.calls == 0)
+        #expect(store.errorMessage == TallyStore.offlineMessage)
+
+        await store.networkChanged(isOnline: true)
+        #expect(await script.calls == 1)
+        #expect(store.errorMessage == nil)
+        #expect(store.count == 3)
+    }
+
+    @Test func aRefreshThatFailedIsRetriedTheMomentTheNetworkReturns() async {
+        let script = Script([.failure(Offline()), .success(snapshot(opened: 2))])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        await store.refresh()
+        #expect(store.errorMessage == "Offline")
+        await store.networkChanged(isOnline: false)
+        #expect(await script.calls == 1)
+
+        await store.networkChanged(isOnline: true)
+        #expect(await script.calls == 2)
+        #expect(store.errorMessage == nil)
+        #expect(store.count == 2)
+    }
+
+    @Test func aFetchThatFailsAsTheNetworkReturnsIsTriedAgain() async throws {
+        let gate = Gate()
+        let script = Script([.failure(Offline()), .success(snapshot(opened: 2))])
+        let store = TallyStore(defaults: freshDefaults()) {
+            await gate.pass()
+            return try await script.next()
+        }
+        await store.networkChanged(isOnline: false)
+        let inFlight = Task { await store.refresh() }
+        while await gate.started < 1 { try await Task.sleep(for: .milliseconds(5)) }
+        await store.networkChanged(isOnline: true)
+        await gate.release()
+        await inFlight.value
+        #expect(await script.calls == 2)
+        #expect(store.errorMessage == nil)
+        #expect(store.count == 2)
+    }
+
+    @Test func aFetchThatFailsAfterTheNetworkDropsAndReturnsIsTriedAgain() async throws {
+        let gate = Gate()
+        let script = Script([.failure(Offline()), .success(snapshot(opened: 3))])
+        let store = TallyStore(defaults: freshDefaults()) {
+            await gate.pass()
+            return try await script.next()
+        }
+        let inFlight = Task { await store.refreshIfStale() }
+        while await gate.started < 1 { try await Task.sleep(for: .milliseconds(5)) }
+        await store.networkChanged(isOnline: false)
+        await store.networkChanged(isOnline: true)
+        await gate.release()
+        await inFlight.value
+        #expect(await script.calls == 2)
+        #expect(store.count == 3)
+    }
+
+    @Test func aPathThatConnectsOnDemandCountsAsOnline() {
+        #expect(NetworkStatus.isUsable(.satisfied))
+        #expect(NetworkStatus.isUsable(.requiresConnection))
+        #expect(!NetworkStatus.isUsable(.unsatisfied))
+    }
+
+    @Test func theNetworkComingBackDoesNotRefetchNumbersNothingWaitedFor() async {
+        let script = Script([.success(snapshot(opened: 1))])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        await store.refresh()
+        await store.networkChanged(isOnline: false)
+        await store.networkChanged(isOnline: true)
+        #expect(await script.calls == 1)
+    }
+
+    /// The system re-reports a working network whenever an interface changes, which isn't the network coming back.
+    @Test func stayingOnlineDoesNotRetryAFailure() async {
+        let script = Script([.failure(Offline())])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        await store.refresh()
+        await store.networkChanged(isOnline: true)
+        await store.networkChanged(isOnline: true)
+        #expect(await script.calls == 1)
+    }
+
+    @Test func theRefreshButtonStillTriesWhileOffline() async {
+        let script = Script([.success(snapshot(opened: 4))])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        await store.networkChanged(isOnline: false)
+        await store.refresh()
+        #expect(await script.calls == 1)
+        #expect(store.count == 4)
+    }
+
+    @Test func aDayChangeWhileOfflineWaitsForTheNetwork() async {
+        let script = Script([.success(snapshot(opened: 5))])
+        let store = TallyStore(defaults: freshDefaults()) { try await script.next() }
+        await store.networkChanged(isOnline: false)
+        await store.calendarDayChanged()
+        #expect(await script.calls == 0)
+        #expect(store.errorMessage == TallyStore.offlineMessage)
+
+        await store.networkChanged(isOnline: true)
+        #expect(await script.calls == 1)
+        #expect(store.count == 5)
+    }
+
+    @Test func aStartedStoreRefreshesWhenTheNetworkComesBack() async throws {
+        let (changes, network) = AsyncStream.makeStream(of: Bool.self)
+        let script = Script([.failure(Offline()), .success(snapshot(opened: 6))])
+        let store = TallyStore(defaults: freshDefaults(), network: NetworkStatus { changes }) { try await script.next() }
+        store.start()
+        while await script.calls < 1 { try await Task.sleep(for: .milliseconds(10)) }
+        network.yield(false)
+        network.yield(true)
+        // The schedule's own retry is a minute away, so only the network coming back can do this.
+        for _ in 0..<200 where await script.calls < 2 { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(await script.calls == 2)
+        #expect(store.count == 6)
+    }
+
+    @Test func changingTheIntervalDoesNotRefetchNumbersJustFetched() async throws {
+        let script = Script([.success(snapshot(opened: 1))])
+        let store = TallyStore(defaults: freshDefaults(), network: online) { try await script.next() }
+        store.start()
+        while await script.calls < 1 { try await Task.sleep(for: .milliseconds(10)) }
+        store.refreshMinutes = 5
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await script.calls == 1)
+    }
+
+    /// The schedule's clock stops while the Mac sleeps, so waking is what refreshes, by starting it over.
+    @Test func wakingStartsTheScheduleOverWithARefresh() async throws {
+        let script = Script([.success(snapshot(opened: 1, at: Date().addingTimeInterval(-10 * 60)))])
+        let store = TallyStore(defaults: freshDefaults(), network: online) { try await script.next() }
+        store.start()
+        while await script.calls < 1 { try await Task.sleep(for: .milliseconds(10)) }
+        store.systemWoke()
+        for _ in 0..<200 where await script.calls < 2 { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(await script.calls == 2)
+    }
+
+    /// The day change on waking is often still failing its first fetch when the schedule starts over. The schedule
+    /// retries it soon, not an interval later.
+    @Test func wakingDuringARefreshThatFailsRetriesItSoon() async throws {
+        let gate = Gate()
+        let script = Script([
+            .success(snapshot(opened: 1, at: Date().addingTimeInterval(-10 * 60))), .failure(Offline()),
+            .success(snapshot(opened: 6)),
+        ])
+        let store = TallyStore(defaults: freshDefaults(), network: online) {
+            if await script.calls == 1 { await gate.pass() }
+            return try await script.next()
+        }
+        store.retryDelay = .milliseconds(50)
+        store.start()
+        while await script.calls < 1 { try await Task.sleep(for: .milliseconds(10)) }
+        Task { await store.calendarDayChanged() }
+        while await gate.started < 1 { try await Task.sleep(for: .milliseconds(10)) }
+        store.systemWoke()
+        try await Task.sleep(for: .milliseconds(50))
+        await gate.release()
+        for _ in 0..<200 where await script.calls < 3 { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(await script.calls == 3)
+        #expect(store.count == 6)
+    }
+
+    @Test func wakingDuringTheSchedulesOwnFailingRefreshStillRetriesIt() async throws {
+        let gate = Gate()
+        let script = Script([.failure(Offline()), .success(snapshot(opened: 6))])
+        let store = TallyStore(defaults: freshDefaults(), network: online) {
+            if await script.calls == 0 { await gate.pass() }
+            return try await script.next()
+        }
+        store.retryDelay = .milliseconds(50)
+        store.start()
+        while await gate.started < 1 { try await Task.sleep(for: .milliseconds(10)) }
+        store.systemWoke()
+        try await Task.sleep(for: .milliseconds(50))
+        await gate.release()
+        for _ in 0..<200 where await script.calls < 2 { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(await script.calls == 2)
+        #expect(store.count == 6)
+    }
+
+    @Test func wakingLeavesNumbersJustFetchedAlone() async throws {
+        let script = Script([.success(snapshot(opened: 1))])
+        let store = TallyStore(defaults: freshDefaults(), network: online) { try await script.next() }
+        store.start()
+        while await script.calls < 1 { try await Task.sleep(for: .milliseconds(10)) }
+        store.systemWoke()
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await script.calls == 1)
+    }
+
+    @Test func wakingAStoreThatWasNeverStartedFetchesNothing() async throws {
+        let script = Script([.success(snapshot(opened: 1))])
+        let store = TallyStore(defaults: freshDefaults(), network: online) { try await script.next() }
+        store.systemWoke()
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await script.calls == 0)
     }
 
     // MARK: Milestones
@@ -655,6 +1077,78 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
         await third.refresh()
         await third.refresh()
         #expect(sent.milestones.count == 1)
+    }
+
+    @Test func aGoalRaisedAfterReachingItIsAnnouncedWhenItIsReachedToo() async {
+        let sent = Sent()
+        let script = Script([
+            .success(snapshot(opened: 999)), .success(snapshot(opened: 1000)), .success(snapshot(opened: 1049)),
+            .success(snapshot(opened: 1050)), .success(snapshot(opened: 1049)), .success(snapshot(opened: 1051)),
+        ])
+        let store = TallyStore(defaults: freshDefaults(), notify: { sent.milestones.append($0) }) {
+            try await script.next()
+        }
+        await store.refresh()
+        await store.refresh()
+        #expect(sent.milestones.count == 1)
+        store.goal = 1050
+        await store.refresh()
+        await store.refresh()
+        #expect(sent.milestones.count == 2)
+        #expect(sent.milestones.last?.body.hasPrefix("1,050 PRs opened in ") == true)
+        // The new goal is still announced only once.
+        await store.refresh()
+        await store.refresh()
+        #expect(sent.milestones.count == 2)
+    }
+
+    @Test func reachingTheGoalInTheOtherMetricIsAnnouncedToo() async {
+        let sent = Sent()
+        let script = Script([
+            .success(snapshot(opened: 2, merged: 0)), .success(snapshot(opened: 3, merged: 0)),
+            .success(snapshot(opened: 4, merged: 2)), .success(snapshot(opened: 4, merged: 3)),
+            .success(snapshot(opened: 5, merged: 3)),
+        ])
+        let store = TallyStore(defaults: freshDefaults(), notify: { sent.milestones.append($0) }) {
+            try await script.next()
+        }
+        store.goal = 3
+        await store.refresh()
+        await store.refresh()
+        #expect(sent.milestones.count == 1)
+        store.metric = .merged
+        await store.refresh()
+        await store.refresh()
+        #expect(sent.milestones.count == 2)
+        #expect(sent.milestones.last?.body.hasPrefix("3 PRs merged in ") == true)
+        // Switching back finds opened already over the goal, which was announced before.
+        store.metric = .opened
+        await store.refresh()
+        #expect(sent.milestones.count == 2)
+    }
+
+    @Test func everyGoalAnnouncedThisMonthStaysAnnounced() async {
+        let sent = Sent()
+        let script = Script([
+            .success(snapshot(opened: 2, merged: 0)), .success(snapshot(opened: 3, merged: 0)),
+            .success(snapshot(opened: 3, merged: 2)), .success(snapshot(opened: 3, merged: 3)),
+            .success(snapshot(opened: 2, merged: 3)), .success(snapshot(opened: 3, merged: 3)),
+        ])
+        let store = TallyStore(defaults: freshDefaults(), notify: { sent.milestones.append($0) }) {
+            try await script.next()
+        }
+        store.goal = 3
+        await store.refresh()
+        await store.refresh()
+        store.metric = .merged
+        await store.refresh()
+        await store.refresh()
+        #expect(sent.milestones.count == 2)
+        // Back on opened, a PR dropping out and back in doesn't announce opened's goal a second time.
+        store.metric = .opened
+        await store.refresh()
+        await store.refresh()
+        #expect(sent.milestones.count == 2)
     }
 
     @Test func lastMonthsNumbersAreNotACrossingThisMonth() async {
@@ -745,8 +1239,43 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
     }
 }
 
+/// The most opaque pixel in `image`, drawn at twice its size.
+@MainActor
+private func maxAlpha(of image: NSImage) -> CGFloat {
+    let rep = NSBitmapImageRep(
+        bitmapDataPlanes: nil, pixelsWide: Int(image.size.width * 2), pixelsHigh: Int(image.size.height * 2),
+        bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+        bytesPerRow: 0, bitsPerPixel: 0
+    )!
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+    image.draw(in: NSRect(x: 0, y: 0, width: rep.pixelsWide, height: rep.pixelsHigh))
+    NSGraphicsContext.restoreGraphicsState()
+    var most: CGFloat = 0
+    for x in 0..<rep.pixelsWide {
+        for y in 0..<rep.pixelsHigh {
+            most = max(most, rep.colorAt(x: x, y: y)?.alphaComponent ?? 0)
+        }
+    }
+    return most
+}
+
 private final class Redraw: @unchecked Sendable {
     var fired = false
+}
+
+/// The store's time for failed refreshes, moved on by hand rather than waiting out real retries.
+@MainActor
+private final class TestClock {
+    private var now = Date()
+
+    init(_ store: TallyStore) {
+        store.clock = { [unowned self] in now }
+    }
+
+    func advance(_ seconds: TimeInterval) {
+        now += seconds
+    }
 }
 
 /// Collects what the store would have sent as notifications.

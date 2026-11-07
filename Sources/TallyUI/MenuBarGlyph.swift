@@ -15,17 +15,32 @@ public enum MenuBarGlyph {
     /// Menu bar labels ignore text colors, so a green number has to be part of the image. Any other number
     /// should stay a plain `Text`, which keeps the system's menu bar text color.
     public static func image(for pace: Pace?, greenTitle: String? = nil) -> NSImage {
-        let text = greenTitle.map {
+        image(for: pace, title: greenTitle, color: .systemGreen, alpha: 1)
+    }
+
+    /// The ring and number faded together, the way the menu bar shows an item that isn't working, for numbers
+    /// that have stopped updating. Labels ignore opacity too, so the number has to be part of this image as well.
+    public static func fadedImage(for pace: Pace?, title: String) -> NSImage {
+        image(for: pace, title: title, color: .labelColor, alpha: 0.4)
+    }
+
+    private static func image(for pace: Pace?, title: String?, color: NSColor, alpha: CGFloat) -> NSImage {
+        let text = title.map {
             NSAttributedString(string: $0, attributes: [
                 .font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular),
-                .foregroundColor: NSColor.systemGreen,
+                .foregroundColor: color,
             ])
         }
         let textSize = text?.size() ?? .zero
         let width = text == nil ? size : size + titleSpacing + ceil(textSize.width)
         let image = NSImage(size: NSSize(width: width, height: size), flipped: false) { rect in
+            // One layer for the lot, so the arc's round caps don't show darker where they overlap the track.
+            let context = NSGraphicsContext.current?.cgContext
+            context?.setAlpha(alpha)
+            context?.beginTransparencyLayer(auxiliaryInfo: nil)
             draw(pace, in: NSRect(x: 0, y: 0, width: size, height: size))
             text?.draw(at: NSPoint(x: size + titleSpacing, y: (rect.height - textSize.height) / 2))
+            context?.endTransparencyLayer()
             return true
         }
         // Not a template: macOS would otherwise flatten the image to a single color.

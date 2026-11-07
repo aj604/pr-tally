@@ -222,24 +222,28 @@ private struct LegendKey: View {
 }
 
 /// How much of what was opened this month has merged, kept apart from merges of older PRs.
-/// Clicking it asks for the PRs not merged yet, when there are any.
+/// Clicking the opened figure asks for the PRs not merged yet, and clicking the older merges asks for those, when there are any.
 struct MergeFunnelSummary: View {
     let funnel: MergeFunnel
     var selectNotMerged: () -> Void = {}
+    var selectCarriedIn: () -> Void = {}
 
     var body: some View {
         if !funnel.isEmpty {
-            if funnel.notMerged > 0 {
-                Button(action: selectNotMerged) { summary.contentShape(Rectangle()) }
-                    .buttonStyle(.plain)
-                    .help("List the \(funnel.notMerged.formatted()) opened this month that haven't merged")
-            } else {
-                summary
+            VStack(alignment: .leading, spacing: 6) {
+                if funnel.notMerged > 0 {
+                    Button(action: selectNotMerged) { opened.contentShape(Rectangle()) }
+                        .buttonStyle(.plain)
+                        .help("List the \(funnel.notMerged.formatted()) opened this month that haven't merged")
+                } else {
+                    opened
+                }
+                detail
             }
         }
     }
 
-    private var summary: some View {
+    private var opened: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("Opened this month").font(.caption.weight(.medium))
@@ -261,22 +265,29 @@ struct MergeFunnelSummary: View {
                 .frame(height: 4)
                 .help("\(funnel.notMerged.formatted()) not merged, either still open or closed")
             }
-            if let detail {
-                Text(detail).font(.caption).foregroundStyle(.secondary).monospacedDigit()
-            }
         }
         .accessibilityElement(children: .combine)
     }
 
-    private var detail: String? {
-        var parts: [String] = []
-        if funnel.carriedIn > 0 {
-            parts.append("\(funnel.carriedIn.formatted()) older \(funnel.carriedIn == 1 ? "PR" : "PRs") also merged")
+    @ViewBuilder private var detail: some View {
+        let median = funnel.medianTimeToMerge.map { "median merge \(Self.duration($0))" }
+        if funnel.carriedIn > 0 || median != nil {
+            HStack(spacing: 0) {
+                if funnel.carriedIn > 0 {
+                    Button(action: selectCarriedIn) {
+                        Text("\(funnel.carriedIn.formatted()) older \(funnel.carriedIn == 1 ? "PR" : "PRs") also merged")
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("List the \(funnel.carriedIn.formatted()) merged this month that were opened before it")
+                    if median != nil { Text(" · ") }
+                }
+                if let median { Text(median) }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .monospacedDigit()
         }
-        if let median = funnel.medianTimeToMerge {
-            parts.append("median merge \(Self.duration(median))")
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     private static func duration(_ seconds: TimeInterval) -> String {

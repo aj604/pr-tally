@@ -11,39 +11,58 @@ enum PullRequestScope: Hashable {
     static let pickable: [PullRequestScope] = [.today, .month]
 
     /// Where the list opens: on a day picked from the charts (as Today when it is today), on the whole month for a
-    /// repository picked from the top repos or the PRs not merged yet, and otherwise on what the menu bar number counts
-    /// unless today has nothing yet.
+    /// repository picked from the top repos or a part of the merge funnel, and otherwise on what the menu bar number
+    /// counts unless today has nothing yet.
     static func opening(for focus: PullRequestFocus, in snapshot: MonthSnapshot, metric: PRMetric, at now: Date) -> Self {
         if let day = focus.day { return day == snapshot.window.dayIndex(of: now) ? .today : .day(day) }
-        if focus.repository != nil || focus.notMerged { return .month }
+        if focus.repository != nil || focus.funnel != nil { return .month }
         return snapshot.todayCount(for: metric, at: now) > 0 ? .today : .month
     }
 }
 
 /// What the summary asked the pull request list to narrow to: a day from the charts, a repository from the top repos,
-/// or the PRs opened this month that haven't merged, from the merge funnel.
+/// or a part of the merge funnel.
 struct PullRequestFocus: Equatable {
     var day: Int?
     var repository: String?
     /// The count to list when it isn't the one the goal counts, as from the other metric's figure.
     var metric: PRMetric?
-    var notMerged = false
+    var funnel: FunnelPart?
+
+    /// The count the list shows: a funnel part's, the one asked for, or else `goal`, the one the goal counts.
+    func listedMetric(goal: PRMetric) -> PRMetric {
+        funnel?.metric ?? metric ?? goal
+    }
+}
+
+/// A part of the merge funnel the list can narrow to, each with the metric that counts its PRs.
+enum FunnelPart: Equatable {
+    /// Opened this month and not merged yet.
+    case notMerged
+    /// Merged this month after being opened in an earlier month.
+    case carriedIn
+
+    var metric: PRMetric { self == .notMerged ? .opened : .merged }
+
+    func pullRequests(in snapshot: MonthSnapshot) -> [PullRequest] {
+        self == .notMerged ? snapshot.notMergedPullRequests : snapshot.carriedInPullRequests
+    }
 }
 
 extension MonthSnapshot {
     /// The pull requests behind a count, newest first, by the date the metric counts them on, from one repository
-    /// when `repository` is given. With `notMerged`, only those the merge funnel counts as not merged.
+    /// when `repository` is given. With `funnel`, only those the merge funnel counts in that part.
     func listedPullRequests(
-        for metric: PRMetric, scope: PullRequestScope, repository: String? = nil, notMerged: Bool = false, at now: Date
+        for metric: PRMetric, scope: PullRequestScope, repository: String? = nil, funnel: FunnelPart? = nil, at now: Date
     ) -> [PullRequest] {
         func counted(_ pr: PullRequest) -> Date? { metric == .opened ? pr.createdAt : pr.mergedAt }
         let today = window.dayIndex(of: now)
-        let waiting = notMerged ? Set(notMergedPullRequests.map(\.id)) : nil
+        let part = funnel.map { Set($0.pullRequests(in: self).map(\.id)) }
         return pullRequests(for: metric)
             .compactMap { pr in counted(pr).map { (pr, $0) } }
             .filter { pr, date in
                 guard window.contains(date), repository.map({ pr.repository.nameWithOwner == $0 }) ?? true,
-                    waiting?.contains(pr.id) ?? true
+                    part?.contains(pr.id) ?? true
                 else { return false }
                 switch scope {
                 case .month: return true
@@ -63,6 +82,13 @@ extension MonthWindow {
         style.timeZone = calendar.timeZone
         return calendar.date(byAdding: .day, value: day, to: start)!.formatted(style)
     }
+
+    /// The month's short name, in the zone the month was counted in.
+    var monthTitle: String {
+        var style = Date.FormatStyle.dateTime.month(.abbreviated)
+        style.timeZone = calendar.timeZone
+        return start.formatted(style)
+    }
 }
 
 /// The pull requests that make up the count, each opening on GitHub when clicked.
@@ -72,22 +98,22 @@ struct PullRequestList: View {
     let now: Date
     @State private var scope: PullRequestScope
     @State private var repository: String?
-    @State private var notMerged: Bool
+    @State private var funnel: FunnelPart?
 
     /// `metric` is the one the goal counts; the focus can ask for the other.
     init(snapshot: MonthSnapshot, metric: PRMetric, now: Date, focus: PullRequestFocus = .init()) {
-        let metric = focus.metric ?? metric
+        let metric = focus.listedMetric(goal: metric)
         self.snapshot = snapshot
         self.metric = metric
         self.now = now
         _scope = State(initialValue: .opening(for: focus, in: snapshot, metric: metric, at: now))
         _repository = State(initialValue: focus.repository)
-        _notMerged = State(initialValue: focus.notMerged)
+        _funnel = State(initialValue: focus.funnel)
     }
 
     var body: some View {
         let pullRequests = snapshot.listedPullRequests(
-            for: metric, scope: scope, repository: repository, notMerged: notMerged, at: now
+            for: metric, scope: scope, repository: repository, funnel: funnel, at: now
         )
         VStack(alignment: .leading, spacing: 10) {
             // A picked day selects neither segment; its filter below says what is showing.
@@ -124,7 +150,7 @@ struct PullRequestList: View {
 
     @ViewBuilder private var filters: some View {
         let day: Int? = if case .day(let day) = scope { day } else { nil }
-        if day != nil || repository != nil || notMerged {
+        if day != nil || repository != nil || funnel != nil {
             HStack(spacing: 6) {
                 if let day {
                     FilterChip(title: snapshot.window.dayTitle(day), help: "Show the whole month") { scope = .month }
@@ -132,8 +158,15 @@ struct PullRequestList: View {
                 if let repository {
                     FilterChip(title: repository, help: "Show every repository") { self.repository = nil }
                 }
-                if notMerged {
-                    FilterChip(title: "Not merged", help: "Show merged PRs too") { notMerged = false }
+                switch funnel {
+                case .notMerged:
+                    FilterChip(title: "Not merged", help: "Show merged PRs too") { funnel = nil }
+                case .carriedIn:
+                    FilterChip(title: "Opened before \(snapshot.window.monthTitle)", help: "Show PRs opened this month too") {
+                        funnel = nil
+                    }
+                case nil:
+                    EmptyView()
                 }
             }
         }
@@ -141,11 +174,18 @@ struct PullRequestList: View {
 
     private var emptyText: String {
         let prs = repository.map { "\($0) PRs" } ?? "PRs"
-        if notMerged {
+        if funnel == .notMerged {
             return switch scope {
             case .today: "No unmerged \(prs) opened today."
             case .month: "No unmerged \(prs) opened this month."
             case .day(let day): "No unmerged \(prs) opened on \(snapshot.window.dayTitle(day))."
+            }
+        }
+        if funnel == .carriedIn {
+            return switch scope {
+            case .today: "No older \(prs) merged today."
+            case .month: "No older \(prs) merged this month."
+            case .day(let day): "No older \(prs) merged on \(snapshot.window.dayTitle(day))."
             }
         }
         return switch scope {

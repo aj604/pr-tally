@@ -128,20 +128,52 @@ private func snapshot(_ prs: [PullRequest], now: Date) -> MonthSnapshot {
             ],
             now: now
         )
-        let month = snapshot.listedPullRequests(for: .opened, scope: .month, notMerged: true, at: now)
+        let month = snapshot.listedPullRequests(for: .opened, scope: .month, funnel: .notMerged, at: now)
         #expect(month.map(\.id) == ["today", "closed", "waiting"])
         #expect(month.count == snapshot.mergeFunnel.notMerged)
         // It narrows whatever else the list is narrowed to.
-        #expect(snapshot.listedPullRequests(for: .opened, scope: .today, notMerged: true, at: now).map(\.id) == ["today"])
+        #expect(snapshot.listedPullRequests(for: .opened, scope: .today, funnel: .notMerged, at: now).map(\.id) == ["today"])
         #expect(
-            snapshot.listedPullRequests(for: .opened, scope: .month, repository: "me/app", notMerged: true, at: now)
+            snapshot.listedPullRequests(for: .opened, scope: .month, repository: "me/app", funnel: .notMerged, at: now)
                 .map(\.id) == ["closed", "waiting"]
         )
-        #expect(snapshot.listedPullRequests(for: .opened, scope: .day(3), notMerged: true, at: now).isEmpty)
+        #expect(snapshot.listedPullRequests(for: .opened, scope: .day(3), funnel: .notMerged, at: now).isEmpty)
     }
 
     @Test func theFunnelOpensTheWholeMonthEvenWhenTodayHasPRs() {
         let busy = snapshot([pr("a", opened: date(2, 9)), pr("b", opened: date(12, 9))], now: now)
-        #expect(PullRequestScope.opening(for: .init(metric: .opened, notMerged: true), in: busy, metric: .opened, at: now) == .month)
+        #expect(PullRequestScope.opening(for: .init(funnel: .notMerged), in: busy, metric: .opened, at: now) == .month)
+        #expect(PullRequestScope.opening(for: .init(funnel: .carriedIn), in: busy, metric: .merged, at: now) == .month)
+    }
+
+    @Test func theOlderMergesListOnlyWhatWasOpenedBeforeTheMonthByWhenItMerged() {
+        let lastInstantOfOctober = calendar.date(from: DateComponents(year: 2026, month: 11, day: 1))!.addingTimeInterval(-1)
+        let snapshot = snapshot(
+            [
+                pr("older", opened: date(1, 9).addingTimeInterval(-86_400 * 20), merged: date(3, 9)),
+                pr("edge", opened: lastInstantOfOctober, merged: date(12, 10), in: "acme/infra"),
+                pr("landed", opened: date(2, 9), merged: date(12, 9)), pr("waiting", opened: date(4, 9)),
+            ],
+            now: now
+        )
+        let month = snapshot.listedPullRequests(for: .merged, scope: .month, funnel: .carriedIn, at: now)
+        #expect(month.map(\.id) == ["edge", "older"])
+        #expect(month.count == snapshot.mergeFunnel.carriedIn)
+        // It narrows whatever else the list is narrowed to.
+        #expect(snapshot.listedPullRequests(for: .merged, scope: .today, funnel: .carriedIn, at: now).map(\.id) == ["edge"])
+        #expect(snapshot.listedPullRequests(for: .merged, scope: .day(2), funnel: .carriedIn, at: now).map(\.id) == ["older"])
+        #expect(
+            snapshot.listedPullRequests(for: .merged, scope: .month, repository: "me/app", funnel: .carriedIn, at: now)
+                .map(\.id) == ["older"]
+        )
+    }
+
+    @Test func eachPartOfTheFunnelListsTheMetricThatCountsItWhicheverTheGoalCounts() {
+        for goal in PRMetric.allCases {
+            #expect(PullRequestFocus(funnel: .notMerged).listedMetric(goal: goal) == .opened)
+            #expect(PullRequestFocus(funnel: .carriedIn).listedMetric(goal: goal) == .merged)
+            #expect(PullRequestFocus(day: 3).listedMetric(goal: goal) == goal)
+        }
+        #expect(PullRequestFocus(metric: .merged).listedMetric(goal: .opened) == .merged)
     }
 }

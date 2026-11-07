@@ -26,7 +26,9 @@ public struct PopoverView: View {
                     showPullRequests(PullRequestFocus(day: day))
                 }
                 MergeFunnelSummary(funnel: snapshot.mergeFunnel) {
-                    showPullRequests(PullRequestFocus(metric: .opened, notMerged: true))
+                    showPullRequests(PullRequestFocus(funnel: .notMerged))
+                } selectCarriedIn: {
+                    showPullRequests(PullRequestFocus(funnel: .carriedIn))
                 }
                 TopRepositories(repositories: snapshot.topRepositories(for: store.metric)) { repository in
                     showPullRequests(PullRequestFocus(repository: repository))

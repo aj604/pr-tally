@@ -48,6 +48,15 @@ extension MonthSnapshot {
         notMerged(besides: landedThisMonth)
     }
 
+    /// The PRs behind `mergeFunnel.carriedIn`: merged this month, each once, opened in an earlier month.
+    public var carriedInPullRequests: [PullRequest] {
+        let landed = landedThisMonth
+        var seen: Set<String> = []
+        return (merged + opened).filter { pr in
+            landed[pr.id] == pr && pr.createdAt < window.start && seen.insert(pr.id).inserted
+        }
+    }
+
     /// One set of this month's merges, from either list, so every merged figure agrees with the others.
     private var landedThisMonth: [String: PullRequest] {
         var landed: [String: PullRequest] = [:]

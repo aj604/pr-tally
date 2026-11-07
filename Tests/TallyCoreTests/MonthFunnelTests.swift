@@ -176,4 +176,23 @@ private func funnel(opened: [PullRequest], merged: [PullRequest]) -> MergeFunnel
         #expect(snapshot.notMergedPullRequests.map(\.id) == ["waiting"])
         #expect(snapshot.mergeFunnel.notMerged == 1)
     }
+
+    // The PRs behind the carried-in figure, which the popover lists when it is clicked.
+
+    @Test func theCarriedInPRsAreTheOnesTheFunnelCounts() {
+        let older = pullRequest(id: "older", opened: date(10, 20), merged: date(11, 2))
+        let lastInstantOfOctober = pullRequest(id: "edge", opened: date(11, 1).addingTimeInterval(-1), merged: date(11, 3))
+        let landed = pullRequest(id: "landed", opened: date(11, 1), merged: date(11, 2))
+        let mergedLastMonth = pullRequest(id: "early", opened: date(9, 1), merged: date(10, 30))
+        let snapshot = month(opened: [landed], merged: [older, landed, lastInstantOfOctober, mergedLastMonth])
+        #expect(snapshot.carriedInPullRequests.map(\.id) == ["older", "edge"])
+        #expect(snapshot.carriedInPullRequests.count == snapshot.mergeFunnel.carriedIn)
+    }
+
+    @Test func aCarriedInPRInBothListsIsListedOnce() {
+        let older = pullRequest(id: "older", opened: date(10, 20), merged: date(11, 2))
+        let snapshot = month(opened: [older], merged: [older, older])
+        #expect(snapshot.carriedInPullRequests.map(\.id) == ["older"])
+        #expect(snapshot.mergeFunnel.carriedIn == 1)
+    }
 }

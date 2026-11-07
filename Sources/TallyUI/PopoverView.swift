@@ -104,22 +104,33 @@ public struct PopoverView: View {
                     .font(.callout.weight(.medium))
                     .foregroundStyle(pace.statusColor)
                 Spacer(minLength: 8)
-                let surplus = pace.quotaSurplus(today: today)
-                let left = pace.leftToday(today: today)
-                if surplus > 0 {
-                    Label("\(surplus.formatted()) over today's quota", systemImage: "arrow.up.right")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.green)
-                        .help("Today's count beat the \(pace.dailyQuota.formatted(.number.precision(.fractionLength(0...1)))) a day a steady pace needs")
-                } else if left > 0 {
-                    Text("\(left.formatted()) more today")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                        .help("\(today.formatted()) of today's \((today + left).formatted()), the share that keeps the goal in reach")
+                let note = TodayNote(pace: pace, today: today)
+                // Both together rarely fit beside the status at full length, so the quota's name shortens first.
+                ViewThatFits(in: .horizontal) {
+                    todayNote(note, pace: pace, today: today, quota: "today's quota")
+                    todayNote(note, pace: pace, today: today, quota: "quota")
                 }
             }
         }
+    }
+
+    private func todayNote(_ note: TodayNote, pace: Pace, today: Int, quota: String) -> some View {
+        HStack(spacing: 8) {
+            if let over = note.overQuota {
+                Label("\(over.formatted()) over \(quota)", systemImage: "arrow.up.right")
+                    .foregroundStyle(.green)
+                    .help("Today's count beat the \(pace.dailyQuota.formatted(.number.precision(.fractionLength(0...1)))) a day a steady pace needs")
+            }
+            if let more = note.moreToday {
+                Text("\(more.formatted()) more today")
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .help("\(today.formatted()) of today's \((today + more).formatted()), the share that keeps the goal in reach")
+            }
+        }
+        .font(.caption.weight(.medium))
+        .lineLimit(1)
+        .fixedSize()
     }
 
     private func stats(snapshot: MonthSnapshot, pace: Pace) -> some View {
@@ -244,6 +255,24 @@ private struct Stat: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// What the line under the progress bar says about today, beside the pace status: how far today is past the fixed
+/// daily quota a steady pace needs, and how many more PRs today needs for its share of what is left of the goal.
+/// Behind pace, today's share is more than the quota, so a day can beat the quota and still fall short of its share.
+/// Then both show: the quota is what turns the menu bar number green, and the share is what keeps the goal in reach.
+struct TodayNote: Equatable {
+    /// Whole PRs past the daily quota, or nil when today hasn't passed it.
+    let overQuota: Int?
+    /// Whole PRs still to count today for today's share, or nil once today has it.
+    let moreToday: Int?
+
+    init(pace: Pace, today: Int) {
+        let surplus = pace.quotaSurplus(today: today)
+        let left = pace.leftToday(today: today)
+        overQuota = surplus > 0 ? surplus : nil
+        moreToday = left > 0 ? left : nil
     }
 }
 

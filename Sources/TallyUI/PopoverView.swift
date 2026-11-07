@@ -88,11 +88,18 @@ public struct PopoverView: View {
                     .foregroundStyle(pace.statusColor)
                 Spacer(minLength: 8)
                 let surplus = pace.quotaSurplus(today: today)
+                let left = pace.leftToday(today: today)
                 if surplus > 0 {
                     Label("\(surplus.formatted()) over today's quota", systemImage: "arrow.up.right")
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.green)
                         .help("Today's count beat the \(pace.dailyQuota.formatted(.number.precision(.fractionLength(0...1)))) a day a steady pace needs")
+                } else if left > 0 {
+                    Text("\(left.formatted()) more today")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                        .help("\(today.formatted()) of today's \((today + left).formatted()), the share that keeps the goal in reach")
                 }
             }
         }
@@ -101,8 +108,9 @@ public struct PopoverView: View {
     private func stats(snapshot: MonthSnapshot, pace: Pace) -> some View {
         Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
             GridRow {
-                Stat(title: "Today", value: snapshot.todayCount(for: store.metric, at: Date()).formatted())
-                Stat(title: "Needed / day", value: pace.neededPerDay.formatted(.number.precision(.fractionLength(1))))
+                let today = snapshot.todayCount(for: store.metric, at: Date())
+                Stat(title: "Today", value: today.formatted())
+                Stat(title: "Needed / day", value: pace.neededPerDay(today: today).formatted(.number.precision(.fractionLength(1))))
                 Stat(title: "On track for", value: pace.projected.formatted())
             }
             GridRow {

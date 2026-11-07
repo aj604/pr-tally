@@ -14,7 +14,8 @@ public struct Pace: Sendable, Equatable {
     public let projected: Int
     public let remaining: Int
     public let daysRemaining: Int
-    /// Count needed per day, including today, to reach the goal.
+    /// Count needed per day, including today, to reach the goal. It counts today's PRs as done but today as a whole
+    /// day still to come, so it drifts down as today's PRs land and jumps back at midnight. `neededPerDay(today:)` doesn't.
     public let neededPerDay: Double
     /// Count a steady pace adds each day. Fixed for the month, unlike `neededPerDay`.
     public let dailyQuota: Double
@@ -42,6 +43,19 @@ public struct Pace: Sendable, Equatable {
     public func quotaSurplus(today: Int) -> Int {
         guard status != .goalHit else { return 0 }
         return max(Int((Double(today) - dailyQuota).rounded(.up)), 0)
+    }
+
+    /// Count needed each day, from the start of today, to reach the goal, given `today` counted so far today.
+    /// It holds steady through the day, and counting exactly that much today leaves tomorrow's figure where it was.
+    public func neededPerDay(today: Int) -> Double {
+        guard remaining > 0, daysRemaining > 0 else { return 0 }
+        let countedBeforeToday = count - min(max(today, 0), count)
+        return Double(goal - countedBeforeToday) / Double(daysRemaining)
+    }
+
+    /// Whole PRs still to count today for today's share of the goal, or 0 once today has its share.
+    public func leftToday(today: Int) -> Int {
+        max(Int(neededPerDay(today: today).rounded(.up)) - today, 0)
     }
 
     /// Whether today's count went past the daily quota. Unlike `quotaSurplus`, this holds after the goal is hit.

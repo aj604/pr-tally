@@ -7,7 +7,8 @@ public enum MenuBarGlyph {
     private static let lineWidth: CGFloat = 2.6
     private static let titleSpacing: CGFloat = 4
     // The menu bar takes on the wallpaper's tint, so a fixed gray can vanish. These follow the text color.
-    private static let track = NSColor.labelColor.withAlphaComponent(0.3)
+    // Computed on every draw: `withAlphaComponent` fixes the label color to the appearance it's called in.
+    private static var track: NSColor { NSColor.labelColor.withAlphaComponent(0.3) }
     private static let tick = NSColor.labelColor
 
     /// Pass a nil pace while there are no numbers yet to draw an empty ring.

@@ -173,13 +173,19 @@ public struct GitHubClient: Sendable {
         var results = page.nodes.compactMap { $0 }
         if page.pageInfo.hasNextPage, let cursors = Self.remainingCursors(after: page), !cursors.isEmpty {
             let rest = try await searchPages(query: terms, after: cursors)
-            if Self.isUnchanged(first: page, rest: rest) {
-                return results + rest.flatMap { $0.nodes.compactMap { $0 } }
+            if Self.areJoined([page] + rest) {
+                results += rest.flatMap { $0.nodes.dropFirst().compactMap { $0 } }
+                page = rest[rest.count - 1]
+            } else {
+                // Results arrived or left while the pages were out, and moved where a page starts. Every cursor
+                // is a count of results, so any of them can be stale now, the first page's included. Starting
+                // over and following one page at a time only ever pushes results later, where the next page
+                // finds them again.
+                page = try await searchPage(query: terms, after: nil)
+                results = page.nodes.compactMap { $0 }
             }
-            // Results arrived or left while the pages were out, and GitHub may have answered them in any order,
-            // so one can have slipped onto a page already answered. Following one page at a time only ever
-            // pushes results later, where the next page finds them again.
         }
+        // Results arriving after the last page asked for, or cursors that couldn't be numbered.
         while page.pageInfo.hasNextPage, let cursor = page.pageInfo.endCursor {
             page = try await searchPage(query: terms, after: cursor)
             results += page.nodes.compactMap { $0 }
@@ -188,20 +194,24 @@ public struct GitHubClient: Sendable {
     }
 
     /// Where each page after `first` starts, when `first`'s cursor shows GitHub's numbering: the count of
-    /// results so far after `cursor:`, in base64. GitHub doesn't promise that, so any other cursor is
-    /// followed a page at a time, as GitHub hands them out.
+    /// results so far after `cursor:`, in base64. Each page starts at the one before's last result, so
+    /// `areJoined` can tell whether anything moved between them. GitHub doesn't promise that numbering,
+    /// so any other cursor is followed a page at a time, as GitHub hands them out.
     private static func remainingCursors(after first: SearchData.Search) -> [String]? {
         guard first.nodes.count == pageSize, first.pageInfo.endCursor == cursor(at: pageSize) else { return nil }
-        return stride(from: pageSize, to: min(first.issueCount, searchResultCap), by: pageSize).map(cursor(at:))
+        let end = min(first.issueCount, searchResultCap)
+        return stride(from: pageSize - 1, to: end - 1, by: pageSize - 1).map(cursor(at:))
     }
 
-    /// Whether pages fetched together saw the same results as `first`: the same count, and no result on
-    /// two pages. An arrival with nothing leaving changes the count; one arriving as another leaves keeps
-    /// the count but shifts a result onto a second page.
-    private static func isUnchanged(first: SearchData.Search, rest: [SearchData.Search]) -> Bool {
-        guard rest.allSatisfy({ $0.issueCount == first.issueCount }) else { return false }
-        let ids = ([first] + rest).flatMap { $0.nodes.compactMap { $0?.id } }
-        return Set(ids).count == ids.count
+    /// Whether each page starts with the result the page before ended on. Search keeps results in one
+    /// order, so then every result listed the whole time sits on one of the pages, however many arrived
+    /// or left and whatever order GitHub answered in. Anything else, including an empty page, means
+    /// results moved where a page starts.
+    private static func areJoined(_ pages: [SearchData.Search]) -> Bool {
+        zip(pages, pages.dropFirst()).allSatisfy { before, after in
+            guard let last = before.nodes.last?.map(\.id), let first = after.nodes.first?.map(\.id) else { return false }
+            return last == first
+        }
     }
 
     static func cursor(at offset: Int) -> String {

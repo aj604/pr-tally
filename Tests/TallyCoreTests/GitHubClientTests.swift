@@ -24,7 +24,7 @@ private final class FakeGitHub: Sendable {
     let failure: String?
     /// Cursors that don't show where a page starts, so the client can only follow them.
     let opaqueCursors: Bool
-    /// Found once the page of opened PRs at `arriveAfter` has been served, and listed at `arrivalPosition`:
+    /// Found once a page of opened PRs at or past `arriveAfter` has been served, and listed at `arrivalPosition`:
     /// first, as GitHub lists the newest, unless told otherwise.
     let arrivals: [PullRequest]
     let arrivalPosition: Int
@@ -76,7 +76,7 @@ private final class FakeGitHub: Sendable {
             return date >= from && date <= to
         }
         let offset = after.flatMap(offset(of:)) ?? 0
-        if isCreated, offset == arriveAfter { arrived.value = true }
+        if isCreated, offset >= arriveAfter { arrived.value = true }
         let page = Array(matches.prefix(FakeGitHub.cap).dropFirst(offset).prefix(100))
         let next = offset + page.count
         return [
@@ -125,20 +125,29 @@ private func client(_ fake: FakeGitHub) -> GitHubClient {
     GitHubClient { try fake.respond(to: $0) }
 }
 
-/// Holds back the page at offset 100 until the page at 200 has been answered, as GitHub may answer pages sent together.
+/// Holds back the second page until the third has been answered, as GitHub may answer pages sent together.
 private func clientAnsweringOutOfOrder(_ fake: FakeGitHub) -> GitHubClient {
-    let answered200 = Box(false)
+    let answeredThird = Box(false)
     return GitHubClient { body in
-        let text = String(decoding: body, as: UTF8.self)
-        if text.contains(GitHubClient.cursor(at: 100)) {
-            // A client that sends pages one at a time never asks for 200 first, so stop waiting eventually.
+        let offset = pageOffset(in: body)
+        if (1..<150).contains(offset) {
+            // A client that sends pages one at a time never asks for the third first, so stop waiting eventually.
             let deadline = ContinuousClock.now + .seconds(1)
-            while !answered200.value, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+            while !answeredThird.value, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
         }
         let reply = try fake.respond(to: body)
-        if text.contains(GitHubClient.cursor(at: 200)) { answered200.value = true }
+        if (150..<250).contains(offset) { answeredThird.value = true }
         return reply
     }
+}
+
+/// Where the page a request asks for starts, from GitHub's `cursor:N`.
+private func pageOffset(in body: Data) -> Int {
+    let request = try! JSONSerialization.jsonObject(with: body) as! [String: Any]
+    guard let cursor = (request["variables"] as! [String: String])["after"],
+        let decoded = Data(base64Encoded: cursor)
+    else { return 0 }
+    return Int(String(decoding: decoded, as: UTF8.self).dropFirst("cursor:".count)) ?? 0
 }
 
 private func client(_ fake: FakeGitHub, overlap: Overlap) -> GitHubClient {
@@ -175,7 +184,8 @@ private func client(_ fake: FakeGitHub, overlap: Overlap) -> GitHubClient {
     }
 
     @Test func fetchesAHeavyMonthsPagesTogetherWithoutAskingForAnyTwice() async throws {
-        // 800 PRs opened and merged through the month: eight pages of each.
+        // 800 PRs opened and merged through the month: nine pages of each, since each page after the first
+        // starts on the PR the one before ended on.
         let prs = (0..<800).map {
             let created = monthStart.addingTimeInterval(Double($0) * 3000)
             return pr($0, createdAt: created, mergedAt: created.addingTimeInterval(600))
@@ -184,7 +194,7 @@ private func client(_ fake: FakeGitHub, overlap: Overlap) -> GitHubClient {
         let snapshot = try await client(FakeGitHub(prs: prs), overlap: overlap).fetchSnapshot(at: now, calendar: utc)
         #expect(Set(snapshot.opened.map(\.id)).count == 800)
         #expect(Set(snapshot.merged.map(\.id)).count == 800)
-        #expect(await overlap.requests == 1 + 8 + 8)
+        #expect(await overlap.requests == 1 + 9 + 9)
         // More than one page of each search at a time, and never more than the limit.
         #expect(await overlap.peak > 2)
         #expect(await overlap.peak <= 2 * GitHubClient.concurrentPages)
@@ -213,7 +223,7 @@ private func client(_ fake: FakeGitHub, overlap: Overlap) -> GitHubClient {
         let prs = (0..<450).map { pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 3000)) }
         let arrivals = (450..<460).map { pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 3000)) }
         // Listed among the results on page 100, so nothing is seen twice and only the count gives the shift away.
-        let fake = FakeGitHub(prs: prs, arrivals: arrivals, arrivalPosition: 150, arriveAfter: 200)
+        let fake = FakeGitHub(prs: prs, arrivals: arrivals, arrivalPosition: 150, arriveAfter: 190)
         let snapshot = try await clientAnsweringOutOfOrder(fake).fetchSnapshot(at: now, calendar: utc)
         #expect(Set(prs.map(\.id)).isSubset(of: snapshot.opened.map(\.id)))
     }
@@ -222,9 +232,40 @@ private func client(_ fake: FakeGitHub, overlap: Overlap) -> GitHubClient {
         // The count stays at 300, so only a PR seen twice gives the shift away.
         let prs = (0..<300).map { pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 3000)) }
         let arrival = pr(300, createdAt: monthStart.addingTimeInterval(300 * 3000))
-        let fake = FakeGitHub(prs: prs, arrivals: [arrival], departures: ["PR_250"], arriveAfter: 200)
+        let fake = FakeGitHub(prs: prs, arrivals: [arrival], departures: ["PR_250"], arriveAfter: 190)
         let snapshot = try await clientAnsweringOutOfOrder(fake).fetchSnapshot(at: now, calendar: utc)
         #expect(Set(prs.map(\.id)).subtracting(["PR_250"]).isSubset(of: snapshot.opened.map(\.id)))
+    }
+
+    @Test func oneLeavingAsAnotherArrivesOnAPageAnsweredLateDoesNotPushAThirdOut() async throws {
+        // The count stays at 300 and no PR is seen twice, so neither gives the shift away.
+        let prs = (0..<300).map { pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 3000)) }
+        let arrival = pr(300, createdAt: monthStart.addingTimeInterval(300 * 3000))
+        let fake = FakeGitHub(
+            prs: prs, arrivals: [arrival], arrivalPosition: 150, departures: ["PR_250"], arriveAfter: 190
+        )
+        let snapshot = try await clientAnsweringOutOfOrder(fake).fetchSnapshot(at: now, calendar: utc)
+        #expect(Set(prs.map(\.id)).subtracting(["PR_250"]).isSubset(of: snapshot.opened.map(\.id)))
+    }
+
+    @Test func pullRequestsLeavingFromTheFirstPageWhilePagesAreOutDoNotPushOthersPastIt() async throws {
+        // A deleted repository takes twelve PRs off the first page, so every count-based cursor is out of date.
+        let prs = (0..<211).map { pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 3000)) }
+        let gone = Set((48..<60).map { "PR_\($0)" })
+        let fake = FakeGitHub(prs: prs, departures: gone, arriveAfter: 190)
+        let snapshot = try await clientAnsweringOutOfOrder(fake).fetchSnapshot(at: now, calendar: utc)
+        #expect(Set(snapshot.opened.map(\.id)) == Set(prs.map(\.id)).subtracting(gone))
+    }
+
+    @Test func pagesThatStillJoinUpKeepFollowingResultsListedAfterTheLast() async throws {
+        // 150 PRs listed after the 200 already there move nothing, so the pages are kept and the rest followed.
+        let prs = (0..<200).map { pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 3000)) }
+        let arrivals = (200..<350).map { pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 3000)) }
+        let overlap = Overlap()
+        let fake = FakeGitHub(prs: prs, arrivals: arrivals, arrivalPosition: 200)
+        let snapshot = try await client(fake, overlap: overlap).fetchSnapshot(at: now, calendar: utc)
+        #expect(Set(snapshot.opened.map(\.id)).count == 350)
+        #expect(await overlap.requests == 1 + (1 + 2 + 1) + 1)
     }
 
     @Test func graphQLErrorsFailTheFetchInsteadOfUndercounting() async {
@@ -697,7 +738,7 @@ private struct HeaderCase: Sendable, CustomTestStringConvertible {
         let failures = Counter()
         let client = http { body in
             _ = requests.next()
-            if String(decoding: body, as: UTF8.self).contains(GitHubClient.cursor(at: 100)), failures.next() <= 2 {
+            if String(decoding: body, as: UTF8.self).contains(GitHubClient.cursor(at: 99)), failures.next() <= 2 {
                 return (502, [:], Data("bad gateway".utf8))
             }
             return try ok(fake, body)

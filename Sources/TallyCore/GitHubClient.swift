@@ -173,9 +173,12 @@ public struct GitHubClient: Sendable {
         var results = page.nodes.compactMap { $0 }
         if page.pageInfo.hasNextPage, let cursors = Self.remainingCursors(after: page), !cursors.isEmpty {
             let rest = try await searchPages(query: terms, after: cursors)
-            results += rest.flatMap { $0.nodes.compactMap { $0 } }
-            // Results that arrived during the refresh push the last ones onto a page nobody asked for.
-            page = rest[rest.count - 1]
+            if Self.isUnchanged(first: page, rest: rest) {
+                return results + rest.flatMap { $0.nodes.compactMap { $0 } }
+            }
+            // Results arrived or left while the pages were out, and GitHub may have answered them in any order,
+            // so one can have slipped onto a page already answered. Following one page at a time only ever
+            // pushes results later, where the next page finds them again.
         }
         while page.pageInfo.hasNextPage, let cursor = page.pageInfo.endCursor {
             page = try await searchPage(query: terms, after: cursor)
@@ -190,6 +193,15 @@ public struct GitHubClient: Sendable {
     private static func remainingCursors(after first: SearchData.Search) -> [String]? {
         guard first.nodes.count == pageSize, first.pageInfo.endCursor == cursor(at: pageSize) else { return nil }
         return stride(from: pageSize, to: min(first.issueCount, searchResultCap), by: pageSize).map(cursor(at:))
+    }
+
+    /// Whether pages fetched together saw the same results as `first`: the same count, and no result on
+    /// two pages. An arrival with nothing leaving changes the count; one arriving as another leaves keeps
+    /// the count but shifts a result onto a second page.
+    private static func isUnchanged(first: SearchData.Search, rest: [SearchData.Search]) -> Bool {
+        guard rest.allSatisfy({ $0.issueCount == first.issueCount }) else { return false }
+        let ids = ([first] + rest).flatMap { $0.nodes.compactMap { $0?.id } }
+        return Set(ids).count == ids.count
     }
 
     static func cursor(at offset: Int) -> String {

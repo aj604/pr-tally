@@ -24,15 +24,26 @@ private final class FakeGitHub: Sendable {
     let failure: String?
     /// Cursors that don't show where a page starts, so the client can only follow them.
     let opaqueCursors: Bool
-    /// Opened once the first page of opened PRs has been served, and listed first, as GitHub lists the newest.
+    /// Found once the page of opened PRs at `arriveAfter` has been served, and listed at `arrivalPosition`:
+    /// first, as GitHub lists the newest, unless told otherwise.
     let arrivals: [PullRequest]
+    let arrivalPosition: Int
+    /// Gone from search, as when a repository is deleted, at the same moment the arrivals appear.
+    let departures: Set<String>
+    let arriveAfter: Int
     private let arrived = Box(false)
 
-    init(prs: [PullRequest], failure: String? = nil, opaqueCursors: Bool = false, arrivals: [PullRequest] = []) {
+    init(
+        prs: [PullRequest], failure: String? = nil, opaqueCursors: Bool = false,
+        arrivals: [PullRequest] = [], arrivalPosition: Int = 0, departures: Set<String> = [], arriveAfter: Int = 0
+    ) {
         self.prs = prs
         self.failure = failure
         self.opaqueCursors = opaqueCursors
         self.arrivals = arrivals
+        self.arrivalPosition = arrivalPosition
+        self.departures = departures
+        self.arriveAfter = arriveAfter
     }
 
     func respond(to body: Data) throws -> Data {
@@ -55,12 +66,17 @@ private final class FakeGitHub: Sendable {
         let range = query.components(separatedBy: isCreated ? "created:" : "merged:")[1].components(separatedBy: "..")
         let from = try! Date(range[0], strategy: .iso8601)
         let to = try! Date(range[1], strategy: .iso8601)
-        let matches = ((arrived.value ? arrivals : []) + prs).filter {
+        var current = prs
+        if arrived.value {
+            current.removeAll { departures.contains($0.id) }
+            current.insert(contentsOf: arrivals, at: arrivalPosition)
+        }
+        let matches = current.filter {
             guard let date = isCreated ? $0.createdAt : $0.mergedAt else { return false }
             return date >= from && date <= to
         }
-        if isCreated { arrived.value = true }
         let offset = after.flatMap(offset(of:)) ?? 0
+        if isCreated, offset == arriveAfter { arrived.value = true }
         let page = Array(matches.prefix(FakeGitHub.cap).dropFirst(offset).prefix(100))
         let next = offset + page.count
         return [
@@ -107,6 +123,22 @@ private actor Overlap {
 
 private func client(_ fake: FakeGitHub) -> GitHubClient {
     GitHubClient { try fake.respond(to: $0) }
+}
+
+/// Holds back the page at offset 100 until the page at 200 has been answered, as GitHub may answer pages sent together.
+private func clientAnsweringOutOfOrder(_ fake: FakeGitHub) -> GitHubClient {
+    let answered200 = Box(false)
+    return GitHubClient { body in
+        let text = String(decoding: body, as: UTF8.self)
+        if text.contains(GitHubClient.cursor(at: 100)) {
+            // A client that sends pages one at a time never asks for 200 first, so stop waiting eventually.
+            let deadline = ContinuousClock.now + .seconds(1)
+            while !answered200.value, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        }
+        let reply = try fake.respond(to: body)
+        if text.contains(GitHubClient.cursor(at: 200)) { answered200.value = true }
+        return reply
+    }
 }
 
 private func client(_ fake: FakeGitHub, overlap: Overlap) -> GitHubClient {
@@ -175,6 +207,24 @@ private func client(_ fake: FakeGitHub, overlap: Overlap) -> GitHubClient {
         let snapshot = try await client(fake).fetchSnapshot(at: now, calendar: utc)
         #expect(Set(prs.map(\.id)).isSubset(of: snapshot.opened.map(\.id)))
         #expect(Set(snapshot.opened.map(\.id)).count == snapshot.opened.count)
+    }
+
+    @Test func aPullRequestOpenedBetweenPagesAnsweredOutOfOrderDoesNotPushAnotherOutOfTheCount() async throws {
+        let prs = (0..<450).map { pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 3000)) }
+        let arrivals = (450..<460).map { pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 3000)) }
+        // Listed among the results on page 100, so nothing is seen twice and only the count gives the shift away.
+        let fake = FakeGitHub(prs: prs, arrivals: arrivals, arrivalPosition: 150, arriveAfter: 200)
+        let snapshot = try await clientAnsweringOutOfOrder(fake).fetchSnapshot(at: now, calendar: utc)
+        #expect(Set(prs.map(\.id)).isSubset(of: snapshot.opened.map(\.id)))
+    }
+
+    @Test func oneArrivingAsAnotherLeavesBetweenPagesAnsweredOutOfOrderDoesNotPushAThirdOut() async throws {
+        // The count stays at 300, so only a PR seen twice gives the shift away.
+        let prs = (0..<300).map { pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 3000)) }
+        let arrival = pr(300, createdAt: monthStart.addingTimeInterval(300 * 3000))
+        let fake = FakeGitHub(prs: prs, arrivals: [arrival], departures: ["PR_250"], arriveAfter: 200)
+        let snapshot = try await clientAnsweringOutOfOrder(fake).fetchSnapshot(at: now, calendar: utc)
+        #expect(Set(prs.map(\.id)).subtracting(["PR_250"]).isSubset(of: snapshot.opened.map(\.id)))
     }
 
     @Test func graphQLErrorsFailTheFetchInsteadOfUndercounting() async {

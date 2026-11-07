@@ -3,9 +3,12 @@ import Foundation
 public enum GitHubError: Error, Equatable, LocalizedError {
     case noToken
     case unauthorized(TokenSource)
-    case http(Int)
+    /// A status GitHub doesn't answer queries with, and what GitHub said about it, if anything.
+    case http(Int, message: String? = nil)
     case graphQL(String)
     case rateLimited(until: Date)
+    /// A reply that isn't JSON, which GitHub's API never sends.
+    case notGitHub
 
     public var errorDescription: String? {
         switch self {
@@ -15,10 +18,14 @@ public enum GitHubError: Error, Equatable, LocalizedError {
                 + "Save a new one there, or remove it to use your `gh` login."
         case .unauthorized(.githubCLI):
             "GitHub rejected your `gh` login. Run `gh auth login` to sign in again, or add a token in Settings."
-        case .http(let code): "GitHub returned HTTP \(code)."
+        case .http(let code, nil): "GitHub returned HTTP \(code)."
+        case .http(let code, let message?): "GitHub returned HTTP \(code): \(message)"
         case .graphQL(let message): "GitHub error: \(message)"
         case .rateLimited(let until):
             "GitHub rate limit reached. Trying again after \(until.formatted(date: .omitted, time: .shortened))."
+        case .notGitHub:
+            "Something other than GitHub answered, such as a network filter or proxy. "
+                + "Check that github.com opens in your browser, then refresh."
         }
     }
 }
@@ -84,7 +91,7 @@ public struct GitHubClient: Sendable {
                     await tokens.invalidate()
                     throw GitHubError.unauthorized(source)
                 }
-                guard status == 200 else { throw GitHubError.http(status) }
+                guard status == 200 else { throw GitHubError.http(status, message: GitHubClient.message(in: data)) }
                 return data
             }
         }
@@ -185,7 +192,13 @@ public struct GitHubClient: Sendable {
         let data = try await deliver(body)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        let envelope = try decoder.decode(Envelope<Response>.self, from: data)
+        let envelope: Envelope<Response>
+        do {
+            envelope = try decoder.decode(Envelope<Response>.self, from: data)
+        } catch DecodingError.dataCorrupted(let context) where context.codingPath.isEmpty {
+            // Not JSON at all, so a page from whatever sits between this Mac and GitHub. Waiting won't fix it.
+            throw GitHubError.notGitHub
+        }
         // Partial data would silently undercount, so any GraphQL error fails the fetch.
         if let error = envelope.errors?.first { throw GitHubError.graphQL(error.message) }
         guard let result = envelope.data else { throw GitHubError.graphQL("Empty response") }
@@ -206,7 +219,7 @@ public struct GitHubClient: Sendable {
 
     private static func isTransient(_ error: Error) -> Bool {
         switch error {
-        case GitHubError.http(let status):
+        case GitHubError.http(let status, _):
             [500, 502, 503, 504].contains(status)
         case let error as URLError:
             [
@@ -216,6 +229,13 @@ public struct GitHubClient: Sendable {
         default:
             false
         }
+    }
+
+    /// What GitHub said about a failed request: REST's `message`, or the first GraphQL error.
+    static func message(in body: Data) -> String? {
+        guard let reply = try? JSONDecoder().decode(Refusal.self, from: body) else { return nil }
+        let message = (reply.message ?? reply.errors?.first?.message)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return message?.isEmpty == false ? message : nil
     }
 
     /// UTC avoids a `+` offset in search queries and keeps month edges exact in any time zone.
@@ -232,6 +252,12 @@ private struct Request: Encodable {
 private struct Envelope<Payload: Decodable>: Decodable {
     struct Failure: Decodable { let message: String }
     let data: Payload?
+    let errors: [Failure]?
+}
+
+private struct Refusal: Decodable {
+    struct Failure: Decodable { let message: String? }
+    let message: String?
     let errors: [Failure]?
 }
 

@@ -608,7 +608,53 @@ private struct HeaderCase: Sendable, CustomTestStringConvertible {
     @Test func aPlainForbiddenIsNotARateLimit() async {
         let client = http { _ in (403, [:], Data(#"{"message":"Resource not accessible"}"#.utf8)) }
         let error = await failure(of: client)
+        #expect(error as? GitHubError == .http(403, message: "Resource not accessible"))
+    }
+
+    @Test func aRefusalSaysWhatGitHubSaid() async throws {
+        let message = "Although you appear to have the correct authorization credentials, the `acme` organization has an IP allow list enabled, and your IP address is not permitted to access this resource."
+        let client = http { _ in (403, [:], Data(#"{"message":"\#(message)","documentation_url":"https://docs.github.com"}"#.utf8)) }
+        let description = try #require(await failure(of: client)?.localizedDescription)
+        #expect(description == "GitHub returned HTTP 403: \(message)")
+    }
+
+    @Test func aServerErrorKeepsGitHubsExplanationAfterTheRetriesRunOut() async {
+        let requests = Counter()
+        let message = "Something went wrong while executing your query. This may be the result of a timeout, or it could be a GitHub bug."
+        let client = http { _ in
+            _ = requests.next()
+            return (502, [:], Data(#"{"data":null,"errors":[{"message":"\#(message)"}]}"#.utf8))
+        }
+        #expect(await failure(of: client) as? GitHubError == .http(502, message: message))
+        #expect(requests.count == 3)
+    }
+
+    @Test(arguments: ["<html><body>Forbidden by policy</body></html>", "", #"{"message":"  "}"#])
+    func aRefusalWithNothingToSayGivesOnlyTheStatus(body: String) async {
+        let client = http { _ in (403, [:], Data(body.utf8)) }
+        let error = await failure(of: client)
         #expect(error as? GitHubError == .http(403))
+        #expect(error?.localizedDescription == "GitHub returned HTTP 403.")
+    }
+
+    @Test(arguments: ["<html><body>Access to this site is blocked by your network administrator.</body></html>", ""])
+    func aReplyThatIsNotJSONSaysSomethingElseAnswered(body: String) async {
+        let requests = Counter()
+        let client = http { _ in
+            _ = requests.next()
+            return (200, [:], Data(body.utf8))
+        }
+        let error = await failure(of: client)
+        #expect(error as? GitHubError == .notGitHub)
+        #expect(error?.localizedDescription.contains("network filter or proxy") == true)
+        // A filter's page doesn't go away in a few seconds.
+        #expect(requests.count == 1)
+    }
+
+    @Test func aJSONReplyOfTheWrongShapeIsNotBlamedOnTheNetwork() async {
+        let client = http { _ in (200, [:], Data(#"{"data":{"viewer":null}}"#.utf8)) }
+        let error = await failure(of: client)
+        #expect(error is DecodingError)
     }
 
     @Test func secondaryLimitWaitsForRetryAfter() async {
@@ -807,21 +853,20 @@ private struct HeaderCase: Sendable, CustomTestStringConvertible {
             _ = requests.next()
             return (403, ["X-RateLimit-Remaining": "4000"], body)
         }
-        for _ in 0..<2 { #expect(await failure(of: client) as? GitHubError == .http(403)) }
+        for _ in 0..<2 { #expect(await failure(of: client) as? GitHubError == .http(403, message: message)) }
         #expect(requests.count == 2)
     }
 
     @Test func aSingleSignOnForbiddenOnTheLastRequestOfTheBudgetIsNotARateLimit() async {
         let requests = Counter()
         let reset = String(Int(now.addingTimeInterval(1800).timeIntervalSince1970))
-        let body = Data(
-            #"{"message":"Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization."}"#
-                .utf8)
+        let message = "Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization."
+        let body = Data(#"{"message":"\#(message)"}"#.utf8)
         let client = http { _ in
             _ = requests.next()
             return (403, ["X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset], body)
         }
-        for _ in 0..<2 { #expect(await failure(of: client) as? GitHubError == .http(403)) }
+        for _ in 0..<2 { #expect(await failure(of: client) as? GitHubError == .http(403, message: message)) }
         #expect(requests.count == 2)
     }
 
@@ -855,7 +900,7 @@ private struct HeaderCase: Sendable, CustomTestStringConvertible {
             _ = requests.next()
             return forbidden(message, ["X-RateLimit-Remaining": "4000"])
         }
-        for _ in 0..<2 { #expect(await failure(of: client) as? GitHubError == .http(403)) }
+        for _ in 0..<2 { #expect(await failure(of: client) as? GitHubError == .http(403, message: message)) }
         #expect(requests.count == 2)
     }
 

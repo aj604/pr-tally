@@ -161,10 +161,14 @@ struct PullRequestList: View {
                     .accessibilityLabel("Clear search")
                 }
             }
-            if search.isActive {
-                Text("\(pullRequests.count.formatted()) of \(scoped.count.formatted()) \(metric.noun)")
+            HStack {
+                Text(search.isActive
+                     ? "\(pullRequests.count.formatted()) of \(scoped.count.formatted()) \(metric.noun)"
+                     : "\(pullRequests.count.formatted()) \(metric.noun)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Spacer(minLength: 4)
+                PullRequestWorkspaceCopyLinksButton(pullRequests: pullRequests, pasteboard: copyLinkPasteboard)
             }
             if pullRequests.isEmpty {
                 Text(search.isActive ? "No matching PRs in this list. Try another title or repository, or clear the search." : emptyText)
@@ -172,11 +176,6 @@ struct PullRequestList: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 60)
             } else {
-                if !search.isActive {
-                    Text("\(pullRequests.count.formatted()) \(metric.noun)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
                 // A short list sizes itself; a long one scrolls within the popover's height.
                 ViewThatFits(in: .vertical) {
                     VStack(alignment: .leading, spacing: 0) { ForEach(pullRequests) { row($0) } }

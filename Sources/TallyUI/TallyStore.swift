@@ -12,14 +12,20 @@ public final class TallyStore {
     public private(set) var snapshot: MonthSnapshot?
     public private(set) var errorMessage: String?
     public private(set) var isRefreshing = false
+    /// The monthly goal for the selected metric. Each metric keeps its own target.
     public var goal: Int {
         didSet {
             if goal < 1 { goal = 1 }
             defaults.set(goal, forKey: Keys.goal)
+            defaults.set(goal, forKey: Keys.goalForMetric(metric))
         }
     }
     public var metric: PRMetric {
-        didSet { defaults.set(metric.rawValue, forKey: Keys.metric) }
+        didSet {
+            defaults.set(metric.rawValue, forKey: Keys.metric)
+            guard metric != oldValue else { return }
+            goal = defaults.integer(forKey: Keys.goalForMetric(metric))
+        }
     }
     /// Whether reaching the goal sends a notification. On by default; the system asks permission the first time.
     public var notifiesOnGoal: Bool {
@@ -40,6 +46,7 @@ public final class TallyStore {
 
     private enum Keys {
         static let goal = "goal"
+        static func goalForMetric(_ metric: PRMetric) -> String { "workflowGoal.\(metric.rawValue)" }
         static let metric = "metric"
         static let refreshMinutes = "refreshMinutes"
         static let notifiesOnGoal = "notifiesOnGoal"
@@ -85,8 +92,14 @@ public final class TallyStore {
         self.network = network
         snapshot = cache?.load()
         let savedGoal = defaults.integer(forKey: Keys.goal)
-        goal = savedGoal > 0 ? savedGoal : 1000
-        metric = defaults.string(forKey: Keys.metric).flatMap(PRMetric.init(rawValue:)) ?? .opened
+        let legacyGoal = savedGoal > 0 ? savedGoal : 1000
+        // Seed both before either can be edited, so a first switch keeps the original shared target.
+        for metric in PRMetric.allCases where defaults.integer(forKey: Keys.goalForMetric(metric)) < 1 {
+            defaults.set(legacyGoal, forKey: Keys.goalForMetric(metric))
+        }
+        let savedMetric = defaults.string(forKey: Keys.metric).flatMap(PRMetric.init(rawValue:)) ?? .opened
+        goal = defaults.integer(forKey: Keys.goalForMetric(savedMetric))
+        metric = savedMetric
         notifiesOnGoal = defaults.object(forKey: Keys.notifiesOnGoal) as? Bool ?? true
         let savedMinutes = defaults.integer(forKey: Keys.refreshMinutes)
         refreshMinutes = savedMinutes > 0 ? savedMinutes : 15

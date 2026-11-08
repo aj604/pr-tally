@@ -146,8 +146,8 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
     @Test func settingsSurviveARestart() {
         let defaults = freshDefaults()
         let store = TallyStore(defaults: defaults) { snapshot(opened: 0) }
-        store.goal = 750
         store.metric = .merged
+        store.goal = 750
         store.refreshMinutes = 5
         let restarted = TallyStore(defaults: defaults) { snapshot(opened: 0) }
         #expect(restarted.goal == 750)
@@ -1117,6 +1117,7 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
         await store.refresh()
         #expect(sent.milestones.count == 1)
         store.metric = .merged
+        store.goal = 3
         await store.refresh()
         await store.refresh()
         #expect(sent.milestones.count == 2)
@@ -1141,6 +1142,7 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
         await store.refresh()
         await store.refresh()
         store.metric = .merged
+        store.goal = 3
         await store.refresh()
         await store.refresh()
         #expect(sent.milestones.count == 2)

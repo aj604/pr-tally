@@ -42,6 +42,28 @@ import TallyCore
         }
     }
 
+    @Test func exposedCopyActionsIdentifyTheRowBeforeAndAfterCopying() async throws {
+        NSApplication.shared.perform(
+            NSSelectorFromString("accessibilitySetValue:forAttribute:"), with: NSNumber(value: true),
+            with: "AXEnhancedUserInterface"
+        )
+        let pasteboard = privatePasteboard()
+        defer { pasteboard.releaseGlobally() }
+        let (host, window) = await hosted(pasteboard: pasteboard)
+        defer { window.orderOut(nil) }
+        for button in copyButtons(in: host) {
+            let expected = try #require(button.accessibilityLabel())
+            let cell = try #require(button.cell)
+            let exposed = try #require(accessibilityDescendants(of: host).first { $0 === cell })
+            #expect(exposed.accessibilityLabel?() == expected)
+            copy(button)
+            await settle(host)
+            #expect(button.toolTip == "Link copied")
+            let copied = try #require(accessibilityDescendants(of: host).first { $0 === cell })
+            #expect(copied.accessibilityLabel?() == expected)
+        }
+    }
+
     @Test func copyingEachRowReplacesThePasteboardWithItsExactURL() async throws {
         let pasteboard = privatePasteboard()
         defer { pasteboard.releaseGlobally() }
@@ -157,6 +179,13 @@ import TallyCore
     private func settle(_ host: NSView) async {
         for _ in 0..<5 { await Task.yield() }
         host.layoutSubtreeIfNeeded()
+    }
+
+    private func accessibilityDescendants(of node: AnyObject, depth: Int = 0) -> [AnyObject] {
+        guard depth < 20 else { return [] }
+        return [node] + (node.accessibilityChildren?() ?? []).flatMap {
+            accessibilityDescendants(of: $0 as AnyObject, depth: depth + 1)
+        }
     }
 
     private func descendants(of view: NSView) -> [NSView] {

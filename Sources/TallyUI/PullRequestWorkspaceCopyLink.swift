@@ -23,6 +23,7 @@ struct PullRequestWorkspaceCopyLinkButton: NSViewRepresentable {
         button.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: nil)
         button.toolTip = "Copy link"
         button.setAccessibilityLabel("Copy link: \(pullRequest.title), \(pullRequest.repository.nameWithOwner)")
+        button.cell?.setAccessibilityLabel(button.accessibilityLabel())
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(url: pullRequest.url, pasteboard: pasteboard) }

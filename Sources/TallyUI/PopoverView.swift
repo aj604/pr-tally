@@ -18,7 +18,7 @@ public struct PopoverView: View {
             } else if store.screen == .pullRequests, let snapshot = store.currentSnapshot() {
                 PullRequestList(snapshot: snapshot, metric: store.metric, now: Date(), focus: listFocus)
             } else if let snapshot = store.currentSnapshot(), let pace = store.pace() {
-                progress(pace, today: snapshot.todayCount(for: store.metric, at: Date()))
+                progress(pace, today: snapshot.todayCount(for: store.metric, at: Date()), snapshot: snapshot)
                 stats(snapshot: snapshot, pace: pace)
                 pullRequestsButton(snapshot)
                 Divider()
@@ -89,7 +89,7 @@ public struct PopoverView: View {
 
     private var monthTitle: String { store.monthTitle() }
 
-    private func progress(_ pace: Pace, today: Int) -> some View {
+    private func progress(_ pace: Pace, today: Int, snapshot: MonthSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(pace.count, format: .number)
@@ -102,9 +102,9 @@ public struct PopoverView: View {
             }
             PaceBar(pace: pace)
             HStack(alignment: .firstTextBaseline) {
-                Text(pace.statusText)
-                    .font(.callout.weight(.medium))
-                    .foregroundStyle(pace.statusColor)
+                MonthInsightGoalDayStatus(snapshot: snapshot, metric: store.metric, pace: pace, now: Date()) { day in
+                    showPullRequests(PullRequestFocus(day: day))
+                }
                 Spacer(minLength: 8)
                 let note = TodayNote(pace: pace, today: today)
                 // Both together rarely fit beside the status at full length, so the quota's name shortens first.

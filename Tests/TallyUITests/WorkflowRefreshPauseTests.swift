@@ -21,21 +21,22 @@ private final class WorkflowRefreshPauseDefaults: UserDefaults, @unchecked Senda
 private actor WorkflowRefreshPauseFetch {
     private(set) var calls = 0
 
-    func next() -> MonthSnapshot {
+    func next(stale: Bool = false) -> MonthSnapshot {
         calls += 1
         let now = Date()
         return MonthSnapshot(
             login: "timed-pause-fixture", window: MonthWindow(containing: now), opened: [], merged: [],
-            totalContributions: 0, fetchedAt: now
+            totalContributions: 0, fetchedAt: stale ? now.addingTimeInterval(-120) : now
         )
     }
 }
 
 @MainActor @Suite struct WorkflowRefreshPauseTests {
     private func store(
-        defaults: UserDefaults = WorkflowRefreshPauseDefaults(), fetch: WorkflowRefreshPauseFetch = WorkflowRefreshPauseFetch()
+        defaults: UserDefaults = WorkflowRefreshPauseDefaults(), fetch: WorkflowRefreshPauseFetch = WorkflowRefreshPauseFetch(),
+        stale: Bool = false
     ) -> TallyStore {
-        TallyStore(defaults: defaults, network: NetworkStatus { AsyncStream { $0.finish() } }) { await fetch.next() }
+        TallyStore(defaults: defaults, network: NetworkStatus { AsyncStream { $0.finish() } }) { await fetch.next(stale: stale) }
     }
 
     private func waitForFetch(_ fetch: WorkflowRefreshPauseFetch) async throws {
@@ -108,6 +109,22 @@ private actor WorkflowRefreshPauseFetch {
         #expect(store.automaticRefreshResumeAt == nil)
         #expect(store.updatedText()?.contains("Paused") == false)
         #expect(!store.menuBarAccessibilityLabel.contains("automatic refresh paused"))
+    }
+
+    @Test(arguments: [false, true])
+    func timedResumeFetchesStaleNumbersButKeepsAFreshManualUpdate(stale: Bool) async throws {
+        let fetch = WorkflowRefreshPauseFetch()
+        let store = store(fetch: fetch, stale: stale)
+        defer { store.automaticRefreshPaused = true }
+        store.pauseAutomaticRefresh(until: Date().addingTimeInterval(0.1))
+        await store.refresh()
+        store.start(observingSystem: false)
+        #expect(await fetch.calls == 1)
+        for _ in 0..<100 where store.automaticRefreshPaused { try await Task.sleep(for: .milliseconds(10)) }
+        let expectedCalls = stale ? 2 : 1
+        for _ in 0..<100 where await fetch.calls < expectedCalls { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(!store.automaticRefreshPaused)
+        #expect(await fetch.calls == expectedCalls)
     }
 
     @Test func aRelaunchedFuturePauseWaitsThenResumes() async throws {

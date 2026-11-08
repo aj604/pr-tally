@@ -67,7 +67,12 @@ struct PullRequestWorkspaceSearch {
         }
 
         private static func path(_ url: URL) -> String {
-            url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            let parts = url.path.split(separator: "/")
+            // Files changed, commits and checks are pages within the same PR.
+            if parts.count >= 4, parts[2] == "pull", number(String(parts[3])) != nil {
+                return parts.prefix(4).joined(separator: "/")
+            }
+            return parts.joined(separator: "/")
         }
     }
 }

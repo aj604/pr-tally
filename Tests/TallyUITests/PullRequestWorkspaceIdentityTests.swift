@@ -55,6 +55,7 @@ import TallyCore
         let prs = [pr("public", number: 42), pr("enterprise", number: 42, host: "git.example.test"), pr("other", number: 142)]
         for url in [
             "https://github.com/me/app/pull/42", "https://GITHUB.COM/ME/APP/pull/42/?diff=split#discussion_r123",
+            "https://github.com/me/app/pull/42/files?diff=split#diff-abc", "https://github.com/me/app/pull/42/commits/abc",
         ] {
             #expect(PullRequestWorkspaceSearch(url).results(in: prs).map(\.id) == ["public"])
         }
@@ -124,7 +125,7 @@ import TallyCore
 
         await search("https://github.com/acme/infra/pull/42", field: field, host: host)
         #expect(!copy.isEnabled)
-        await search("https://github.com/me/app/pull/7?diff=split#discussion", field: field, host: host)
+        await search("https://github.com/me/app/pull/7/files?diff=split#discussion", field: field, host: host)
         #expect(!copy.isEnabled)
         scope.selectedSegment = 1
         scope.sendAction(scope.action, to: scope.target)

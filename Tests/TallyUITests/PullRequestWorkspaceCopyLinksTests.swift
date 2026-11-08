@@ -149,6 +149,22 @@ import TallyCore
         #expect(button.cell?.accessibilityLabel() == "Copy links for 1 PR in this list")
     }
 
+    @Test func aScrollingListCopiesEveryRowIncludingThoseOffscreen() async throws {
+        let pasteboard = privatePasteboard()
+        defer { pasteboard.releaseGlobally() }
+        let prs = (1...30).map { pr("\($0)", hoursAgo: Double($0) / 100) }
+        let fixture = MonthSnapshot(
+            login: "fixture", window: snapshot().window, opened: Array(prs.reversed()), merged: [],
+            totalContributions: 0, fetchedAt: now
+        )
+        let (host, window) = await hosted(pasteboard: pasteboard, fixture: fixture)
+        defer { window.orderOut(nil) }
+        let button = try copyButton(in: host)
+        #expect(button.accessibilityLabel() == "Copy links for 30 PRs in this list")
+        try expectCopied(prs.map { $0.url.absoluteString }.joined(separator: "\n"), in: host, pasteboard: pasteboard)
+        #expect(button.toolTip == "30 links copied")
+    }
+
     private func copyButton(in host: NSView) throws -> NSButton {
         try #require(descendants(of: host).compactMap { $0 as? NSButton }.first {
             $0.accessibilityLabel()?.hasPrefix("Copy links for") == true
@@ -162,10 +178,10 @@ import TallyCore
     }
 
     private func hosted(
-        focus: PullRequestFocus = .init(), pasteboard: NSPasteboard
+        focus: PullRequestFocus = .init(), pasteboard: NSPasteboard, fixture: MonthSnapshot? = nil
     ) async -> (NSHostingView<PullRequestList>, NSWindow) {
         let host = NSHostingView(rootView: PullRequestList(
-            snapshot: snapshot(), metric: .opened, now: now, focus: focus, copyLinkPasteboard: pasteboard
+            snapshot: fixture ?? snapshot(), metric: .opened, now: now, focus: focus, copyLinkPasteboard: pasteboard
         ))
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 288, height: 420), styleMask: [.titled], backing: .buffered, defer: false

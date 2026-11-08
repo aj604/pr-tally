@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import Testing
 import TallyCore
 @testable import TallyUI
@@ -186,8 +187,8 @@ private final class WorkflowGoalDefaults: UserDefaults, @unchecked Sendable {
         #expect(merged.dailyQuota == 1)
         #expect(merged.remaining == 20)
         #expect(merged.moreToday == 1)
-        #expect(merged.quotaText == "Average: 1 PRs merged per day this month.")
-        #expect(merged.progressText == "20 PRs merged left this month · 1 more today.")
+        #expect(merged.quotaText == "Average: 1 per day this month (PRs merged).")
+        #expect(merged.progressText == "PRs merged: 20 left this month · 1 more today.")
         store.metric = .opened
         #expect(store.workflowGoalPlan(at: now) == opened)
     }
@@ -238,7 +239,7 @@ private final class WorkflowGoalDefaults: UserDefaults, @unchecked Sendable {
         let plan = store.workflowGoalPlan(at: now)
         #expect(plan.remaining == 10)
         #expect(plan.moreToday == 0)
-        #expect(plan.progressText == "10 PRs opened left this month · Today's share complete.")
+        #expect(plan.progressText == "PRs opened: 10 left this month · Today's share complete.")
     }
 
     @Test func theLastDayRequiresAllRemainingPRsToday() async {
@@ -261,6 +262,36 @@ private final class WorkflowGoalDefaults: UserDefaults, @unchecked Sendable {
         let plan = store.workflowGoalPlan(at: now)
         #expect(plan.remaining == 300)
         #expect(plan.moreToday == 20)
-        #expect(plan.progressText == "300 PRs opened left this month · 20 more today.")
+        #expect(plan.progressText == "PRs opened: 300 left this month · 20 more today.")
     }
+
+    @Test func thePreviewObservesGoalMetricAndSnapshotChanges() async {
+        let now = planningDate()
+        let snapshot = planningSnapshot(at: now)
+        let store = TallyStore(defaults: WorkflowGoalDefaults()) { snapshot }
+        func watch() -> WorkflowGoalRedraw {
+            let redraw = WorkflowGoalRedraw()
+            withObservationTracking {
+                _ = store.workflowGoalPlan(at: now)
+            } onChange: {
+                redraw.fired = true
+            }
+            return redraw
+        }
+        let goalEdit = watch()
+        store.goal = 600
+        #expect(goalEdit.fired)
+        let metricEdit = watch()
+        store.metric = .merged
+        #expect(metricEdit.fired)
+        let fetched = watch()
+        await store.refresh()
+        #expect(fetched.fired)
+    }
+
+}
+
+
+private final class WorkflowGoalRedraw: @unchecked Sendable {
+    var fired = false
 }

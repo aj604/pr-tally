@@ -9,7 +9,7 @@ struct WorkflowGoalPlan: Equatable {
     let moreToday: Int?
 
     var quotaText: String {
-        "Average: \(dailyQuota.formatted(.number.precision(.fractionLength(0...1)))) \(metric.noun) per day this month."
+        "Average: \(dailyQuota.formatted(.number.precision(.fractionLength(0...1)))) per day this month (\(metric.noun))."
     }
 
     var progressText: String {
@@ -18,7 +18,7 @@ struct WorkflowGoalPlan: Equatable {
         }
         if remaining == 0 { return "Goal reached for \(metric.noun)." }
         let today = moreToday > 0 ? "\(moreToday.formatted()) more today" : "Today's share complete"
-        return "\(remaining.formatted()) \(metric.noun) left this month · \(today)."
+        return "\(metric.noun): \(remaining.formatted()) left this month · \(today)."
     }
 }
 

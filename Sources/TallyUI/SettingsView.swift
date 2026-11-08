@@ -32,13 +32,6 @@ struct SettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            row("Monthly goal") {
-                TextField("Goal", value: $store.goal, format: .number)
-                    .labelsHidden()
-                    .multilineTextAlignment(.trailing)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 80)
-            }
             row("Count toward goal") {
                 Picker("Count toward goal", selection: $store.metric) {
                     ForEach(PRMetric.allCases) { Text($0.title).tag($0) }
@@ -47,13 +40,19 @@ struct SettingsView: View {
                 .pickerStyle(.segmented)
                 .frame(width: 140)
             }
-            row("Refresh every") {
-                Picker("Refresh every", selection: $store.refreshMinutes) {
-                    ForEach([5, 15, 30, 60], id: \.self) { Text("\($0) min").tag($0) }
-                }
-                .labelsHidden()
-                .frame(width: 90)
+            row("Monthly goal") {
+                TextField("Goal", value: $store.goal, format: .number)
+                    .labelsHidden()
+                    .multilineTextAlignment(.trailing)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 80)
             }
+            Text("Opened and merged PRs each keep their own monthly goal.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            WorkflowGoalPreview(plan: store.workflowGoalPlan())
+            WorkflowMenuBarSettings(store: store)
+            WorkflowRefreshSettings(store: store)
             Toggle("Notify when I hit my goal", isOn: $store.notifiesOnGoal)
                 .font(.callout)
                 .toggleStyle(.switch)

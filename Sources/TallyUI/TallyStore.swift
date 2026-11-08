@@ -12,14 +12,20 @@ public final class TallyStore {
     public private(set) var snapshot: MonthSnapshot?
     public private(set) var errorMessage: String?
     public private(set) var isRefreshing = false
+    /// The monthly goal for the selected metric. Each metric keeps its own target.
     public var goal: Int {
         didSet {
             if goal < 1 { goal = 1 }
             defaults.set(goal, forKey: Keys.goal)
+            defaults.set(goal, forKey: Keys.goalForMetric(metric))
         }
     }
     public var metric: PRMetric {
-        didSet { defaults.set(metric.rawValue, forKey: Keys.metric) }
+        didSet {
+            defaults.set(metric.rawValue, forKey: Keys.metric)
+            guard metric != oldValue else { return }
+            goal = defaults.integer(forKey: Keys.goalForMetric(metric))
+        }
     }
     /// Whether reaching the goal sends a notification. On by default; the system asks permission the first time.
     public var notifiesOnGoal: Bool {
@@ -31,6 +37,29 @@ public final class TallyStore {
             if schedule != nil { startSchedule() }
         }
     }
+    /// Stops automatic fetches until resumed, including after relaunch. Manual refresh remains available.
+    public var automaticRefreshPaused: Bool {
+        didSet {
+            defaults.set(automaticRefreshPaused, forKey: Keys.automaticRefreshPaused)
+            refreshResumeTask?.cancel()
+            refreshResumeTask = nil
+            automaticRefreshResumeAt = nil
+            defaults.set(nil, forKey: Keys.automaticRefreshResumeAt)
+            guard automaticRefreshPaused != oldValue else { return }
+            if automaticRefreshPaused {
+                schedule?.cancel()
+                schedule = nil
+            } else if started {
+                startSchedule()
+            }
+        }
+    }
+    /// A timed pause's deadline. Nil keeps the existing pause-until-resumed behavior.
+    public private(set) var automaticRefreshResumeAt: Date?
+    /// The number shown beside the monthly progress ring. Today's count remains the default.
+    public var menuBarDisplay: WorkflowMenuBarDisplay {
+        didSet { defaults.set(menuBarDisplay.rawValue, forKey: Keys.menuBarDisplay) }
+    }
 
     /// What the popover shows. Kept here rather than in the view because `MenuBarExtra` keeps the view's own
     /// state alive while the popover is closed; see `popoverClosed()`.
@@ -40,9 +69,13 @@ public final class TallyStore {
 
     private enum Keys {
         static let goal = "goal"
+        static func goalForMetric(_ metric: PRMetric) -> String { "workflowGoal.\(metric.rawValue)" }
         static let metric = "metric"
         static let refreshMinutes = "refreshMinutes"
         static let notifiesOnGoal = "notifiesOnGoal"
+        static let menuBarDisplay = "workflowMenuBarDisplay"
+        static let automaticRefreshPaused = "workflowAutomaticRefreshPaused"
+        static let automaticRefreshResumeAt = "workflowAutomaticRefreshResumeAt"
         /// The goals announced this month, each named by month, metric and number. See `announceGoal(from:to:)`.
         static let goalAnnounced = "goalAnnounced"
     }
@@ -70,7 +103,8 @@ public final class TallyStore {
     /// The schedule, waiting for a refresh it found already under way. See `refreshSettled()`.
     @ObservationIgnored private var refreshWaiters: [CheckedContinuation<Void, Never>] = []
     private var schedule: Task<Void, Never>?
-    private var watchingSystem = false
+    private var refreshResumeTask: Task<Void, Never>?
+    private var started = false
     /// Read by everything that depends on today's date, so it redraws at midnight even if the refresh then fails.
     private var dayChanges = 0
 
@@ -85,14 +119,58 @@ public final class TallyStore {
         self.network = network
         snapshot = cache?.load()
         let savedGoal = defaults.integer(forKey: Keys.goal)
-        goal = savedGoal > 0 ? savedGoal : 1000
-        metric = defaults.string(forKey: Keys.metric).flatMap(PRMetric.init(rawValue:)) ?? .opened
+        let legacyGoal = savedGoal > 0 ? savedGoal : 1000
+        // Seed both before either can be edited, so a first switch keeps the original shared target.
+        for metric in PRMetric.allCases where defaults.integer(forKey: Keys.goalForMetric(metric)) < 1 {
+            defaults.set(legacyGoal, forKey: Keys.goalForMetric(metric))
+        }
+        let savedMetric = defaults.string(forKey: Keys.metric).flatMap(PRMetric.init(rawValue:)) ?? .opened
+        goal = defaults.integer(forKey: Keys.goalForMetric(savedMetric))
+        metric = savedMetric
         notifiesOnGoal = defaults.object(forKey: Keys.notifiesOnGoal) as? Bool ?? true
         let savedMinutes = defaults.integer(forKey: Keys.refreshMinutes)
         refreshMinutes = savedMinutes > 0 ? savedMinutes : 15
+        let savedPause = defaults.object(forKey: Keys.automaticRefreshPaused) as? Bool ?? false
+        let deadline = savedPause ? defaults.object(forKey: Keys.automaticRefreshResumeAt) as? Date : nil
+        let pauseExpired = deadline.map { $0 <= Date() } ?? false
+        automaticRefreshPaused = savedPause && !pauseExpired
+        automaticRefreshResumeAt = pauseExpired ? nil : deadline
+        if pauseExpired { defaults.set(false, forKey: Keys.automaticRefreshPaused) }
+        if deadline == nil || pauseExpired { defaults.set(nil, forKey: Keys.automaticRefreshResumeAt) }
+        menuBarDisplay = defaults.string(forKey: Keys.menuBarDisplay)
+            .flatMap(WorkflowMenuBarDisplay.init(rawValue:)) ?? .today
     }
 
     public var count: Int? { currentSnapshot()?.count(for: metric) }
+
+    /// Pauses automatic work until an absolute deadline, preserving it across relaunch.
+    public func pauseAutomaticRefresh(until deadline: Date) {
+        automaticRefreshPaused = true
+        automaticRefreshResumeAt = deadline
+        defaults.set(deadline, forKey: Keys.automaticRefreshResumeAt)
+        resumeAutomaticRefreshIfDue(at: clock())
+        if started { scheduleRefreshResume() }
+    }
+
+    /// Also checked on wake and automatic events: a sleeping Mac cannot run the deadline task on time.
+    func resumeAutomaticRefreshIfDue(at now: Date) {
+        guard automaticRefreshPaused, let deadline = automaticRefreshResumeAt, now >= deadline else { return }
+        automaticRefreshPaused = false
+    }
+
+    private func scheduleRefreshResume() {
+        refreshResumeTask?.cancel()
+        guard let deadline = automaticRefreshResumeAt else { return }
+        let delay = max(0, deadline.timeIntervalSince(clock()))
+        refreshResumeTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(delay), clock: .continuous) }
+            catch { return }
+            guard let self else { return }
+            self.resumeAutomaticRefreshIfDue(at: self.clock())
+            // If the system clock moved back, wait for the wall-clock deadline again.
+            if self.automaticRefreshPaused { self.scheduleRefreshResume() }
+        }
+    }
 
     /// The last good numbers, as long as they're for the month containing `now`. That is the month on the
     /// user's calendar as well as the window's own instants, which stop agreeing when the time zone changes.
@@ -132,7 +210,9 @@ public final class TallyStore {
 
     /// When the numbers were fetched. Restored numbers can be days old, so the date appears once it isn't today.
     public func updatedText(at now: Date = Date()) -> String? {
-        fetchedTime(at: now).map { "Updated \($0)" }
+        let updated = fetchedTime(at: now).map { "Updated \($0)" }
+        guard automaticRefreshPaused else { return updated }
+        return updated.map { "\($0) · Paused" } ?? "Automatic refresh paused"
     }
 
     private func fetchedTime(at now: Date) -> String? {
@@ -145,9 +225,21 @@ public final class TallyStore {
             : snapshot.fetchedAt.formatted(.dateTime.month(.abbreviated).day().hour().minute())
     }
 
-    /// Today's count, shown beside the menu bar ring.
+    /// Today's count or monthly count/goal, as chosen in Settings, beside the menu bar ring.
     public func menuBarTitle(at now: Date = Date()) -> String {
-        currentSnapshot(at: now).map { $0.todayCount(for: metric, at: now).formatted() } ?? "–"
+        guard let snapshot = currentSnapshot(at: now) else { return "–" }
+        switch menuBarDisplay {
+        case .today: return snapshot.todayCount(for: metric, at: now).formatted()
+        case .monthProgress: return "\(snapshot.count(for: metric).formatted())/\(goal.formatted())"
+        }
+    }
+
+    /// Monthly progress celebrates reaching the goal; today's count keeps its daily quota highlight.
+    public func menuBarNumberIsGreen(at now: Date = Date()) -> Bool {
+        switch menuBarDisplay {
+        case .today: return menuBarBeatsPace(at: now)
+        case .monthProgress: return pace(at: now)?.status == .goalHit
+        }
     }
 
     /// Whether today's count has passed the daily quota, which turns the menu bar number green.
@@ -172,11 +264,20 @@ public final class TallyStore {
     /// What VoiceOver reads for the menu bar item, since the image carries the numbers visually.
     public var menuBarAccessibilityLabel: String {
         let now = Date()
+        if automaticRefreshPaused {
+            let numbers = pace(at: now).map { "\($0.count.formatted()) of \($0.goal.formatted()) \(metric.noun). " } ?? ""
+            let updated = fetchedTime(at: now).map { "Last updated \($0). " } ?? ""
+            let resume = automaticRefreshResumeAt.map {
+                "Resumes automatically \($0.formatted(date: .abbreviated, time: .shortened)). "
+            } ?? ""
+            return "PR Tally, automatic refresh paused. \(resume)\(numbers)\(updated)Refresh now is available in the popover."
+        }
         guard let pace = pace(at: now) else {
             guard menuBarIsStale else { return "PR Tally, loading" }
             return "PR Tally, not updating" + (fetchedTime(at: now).map { " since \($0)" } ?? "")
         }
-        let today = "\(menuBarTitle(at: now)) today\(menuBarBeatsPace(at: now) ? ", beating the daily pace" : "")"
+        let todayCount = currentSnapshot(at: now)?.todayCount(for: metric, at: now) ?? 0
+        let today = "\(todayCount.formatted()) today\(menuBarBeatsPace(at: now) ? ", beating the daily pace" : "")"
         let label = "\(today). \(pace.count.formatted()) of \(pace.goal.formatted()) \(metric.noun). \(pace.statusText)"
         guard menuBarIsStale, let time = fetchedTime(at: now) else { return label }
         return "\(label). Not updating since \(time)"
@@ -212,7 +313,7 @@ public final class TallyStore {
         // A fetch that spanned midnight may have come back with the month that just ended, and one that failed
         // may have failed only because the network was still coming back.
         let failedBeforeNetworkReturned = errorMessage != nil && isOnline && networkReturns != networkReturnsAtStart
-        if dayChanges != dayChangesAtStart || failedBeforeNetworkReturned { await refresh() }
+        if !automaticRefreshPaused, dayChanges != dayChangesAtStart || failedBeforeNetworkReturned { await refresh() }
     }
 
     /// Tells the user once when the goal is reached, rather than on every refresh that finds it reached. A goal
@@ -235,6 +336,8 @@ public final class TallyStore {
         // Foundation caches the system zone, which `Calendar.current` and the formatters would otherwise keep reading.
         NSTimeZone.resetSystemTimeZone()
         dayChanges += 1
+        resumeAutomaticRefreshIfDue(at: clock())
+        guard !automaticRefreshPaused else { return }
         if isOnline {
             await refresh()
         } else {
@@ -249,7 +352,8 @@ public final class TallyStore {
         let cameBack = online && !isOnline
         isOnline = online
         if cameBack { networkReturns += 1 }
-        guard cameBack, missedRefresh || errorMessage != nil else { return }
+        resumeAutomaticRefreshIfDue(at: clock())
+        guard !automaticRefreshPaused, cameBack, missedRefresh || errorMessage != nil else { return }
         await refresh()
     }
 
@@ -275,6 +379,8 @@ public final class TallyStore {
     /// Refreshes when nobody pressed the button: on opening, on the schedule, after a wake. Numbers under a
     /// minute old are left alone, so these don't stack up, and while offline it waits for the network.
     public func refreshIfStale(now: Date = Date()) async {
+        resumeAutomaticRefreshIfDue(at: now)
+        guard !automaticRefreshPaused else { return }
         if let fetchedAt = snapshot?.fetchedAt, now.timeIntervalSince(fetchedAt) < 60 { return }
         guard isOnline else { return waitForNetwork() }
         await refresh()
@@ -283,9 +389,17 @@ public final class TallyStore {
     /// Begins refreshing on a schedule, after the Mac wakes, when the network comes back, and when the day or
     /// time zone changes. Safe to call more than once.
     public func start() {
-        if schedule == nil { startSchedule() }
-        guard !watchingSystem else { return }
-        watchingSystem = true
+        start(observingSystem: true)
+    }
+
+    /// Tests drive wake, network and calendar events directly, without observing the machine's events.
+    func start(observingSystem: Bool) {
+        resumeAutomaticRefreshIfDue(at: clock())
+        if !automaticRefreshPaused, schedule == nil { startSchedule() }
+        guard !started else { return }
+        started = true
+        scheduleRefreshResume()
+        guard observingSystem else { return }
         Task { [weak self, network] in
             for await online in network.changes() {
                 await self?.networkChanged(isOnline: online)
@@ -317,6 +431,8 @@ public final class TallyStore {
     /// Once the network has had a few seconds after a wake, the schedule starts over: one refresh, and a retry a
     /// minute later if that fails. Its clock stops while the Mac sleeps, so it doesn't also fire as the lid opens.
     func systemWoke() {
+        resumeAutomaticRefreshIfDue(at: clock())
+        guard !automaticRefreshPaused else { return }
         // Hours asleep aren't hours of failing, so a stall the menu bar wasn't showing yet starts over. One it was
         // showing stays shown rather than flickering back for two minutes.
         if !menuBarIsStale {

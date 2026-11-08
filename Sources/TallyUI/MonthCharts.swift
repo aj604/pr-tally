@@ -47,7 +47,11 @@ struct MonthCharts: View {
                 HStack {
                     Text("Per day").font(.caption.weight(.medium))
                     Spacer()
-                    Text(dailyCaption).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                    if let hoverCaption {
+                        Text(hoverCaption).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                    } else {
+                        MonthInsightBestDaySummary(snapshot: snapshot, metric: metric, now: now, selectDay: selectDay)
+                    }
                 }
                 dailyBars.frame(height: 62)
                 MonthInsightActivitySummary(snapshot: snapshot, metric: metric, now: now)
@@ -56,9 +60,9 @@ struct MonthCharts: View {
         }
     }
 
-    private var dailyCaption: String {
+    private var hoverCaption: String? {
         guard let hoveredDay, daily.indices.contains(hoveredDay - 1) else {
-            return "Best day: \((daily.max() ?? 0).formatted())"
+            return nil
         }
         var text = "\(snapshot.window.dayTitle(hoveredDay - 1)): \(daily[hoveredDay - 1].formatted())"
         if cumulative.indices.contains(hoveredDay - 1) {
@@ -155,7 +159,7 @@ struct MonthCharts: View {
             }
         }
         .daySelection($hoveredDay, dayCount: dayCount, select: select)
-        .accessibilityLabel("Pull requests per day. \(dailyCaption)")
+        .accessibilityLabel("Pull requests per day" + (hoverCaption.map { ". \($0)" } ?? ""))
     }
 
     /// Days with nothing counted have nothing to list.

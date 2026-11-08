@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import TallyCore
 
@@ -106,17 +107,22 @@ struct PullRequestList: View {
     let snapshot: MonthSnapshot
     let metric: PRMetric
     let now: Date
+    private let copyLinkPasteboard: NSPasteboard
     @State private var scope: PullRequestScope
     @State private var repository: String?
     @State private var funnel: FunnelPart?
     @State private var searchText = ""
 
     /// `metric` is the one the goal counts; the focus can ask for the other.
-    init(snapshot: MonthSnapshot, metric: PRMetric, now: Date, focus: PullRequestFocus = .init()) {
+    init(
+        snapshot: MonthSnapshot, metric: PRMetric, now: Date, focus: PullRequestFocus = .init(),
+        copyLinkPasteboard: NSPasteboard = .general
+    ) {
         let metric = focus.listedMetric(goal: metric)
         self.snapshot = snapshot
         self.metric = metric
         self.now = now
+        self.copyLinkPasteboard = copyLinkPasteboard
         _scope = State(initialValue: .opening(for: focus, in: snapshot, metric: metric, at: now))
         _repository = State(initialValue: focus.repository)
         _funnel = State(initialValue: focus.funnel)
@@ -238,27 +244,31 @@ struct PullRequestList: View {
 
     private func row(_ pr: PullRequest) -> some View {
         let date = (metric == .opened ? pr.createdAt : pr.mergedAt) ?? pr.createdAt
-        return Link(destination: pr.url) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(pr.title)
-                    .font(.callout)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                HStack(spacing: 4) {
-                    Text(pr.repository.nameWithOwner).lineLimit(1).truncationMode(.head)
-                    Spacer(minLength: 4)
-                    Text(snapshot.window.rowTime(date, withDay: scope == .month)).monospacedDigit()
+        return HStack(spacing: 6) {
+            Link(destination: pr.url) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(pr.title)
+                        .font(.callout)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                    HStack(spacing: 4) {
+                        Text(pr.repository.nameWithOwner).lineLimit(1).truncationMode(.head)
+                        Spacer(minLength: 4)
+                        Text(snapshot.window.rowTime(date, withDay: scope == .month)).monospacedDigit()
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .padding(.vertical, 5)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
-            .padding(.vertical, 5)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .help(pr.title)
+            .accessibilityLabel("\(pr.title), \(pr.repository.nameWithOwner)")
+            PullRequestWorkspaceCopyLinkButton(pullRequest: pr, pasteboard: copyLinkPasteboard)
+                .frame(width: 24, height: 24)
         }
-        .buttonStyle(.plain)
-        .help(pr.title)
-        .accessibilityLabel("\(pr.title), \(pr.repository.nameWithOwner)")
     }
 }
 

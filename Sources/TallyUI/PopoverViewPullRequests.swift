@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import TallyCore
 
@@ -106,25 +107,35 @@ struct PullRequestList: View {
     let snapshot: MonthSnapshot
     let metric: PRMetric
     let now: Date
+    private let copyLinkPasteboard: NSPasteboard
     @State private var scope: PullRequestScope
     @State private var repository: String?
     @State private var funnel: FunnelPart?
+    @State private var searchText = ""
 
     /// `metric` is the one the goal counts; the focus can ask for the other.
-    init(snapshot: MonthSnapshot, metric: PRMetric, now: Date, focus: PullRequestFocus = .init()) {
+    init(
+        snapshot: MonthSnapshot, metric: PRMetric, now: Date, focus: PullRequestFocus = .init(),
+        copyLinkPasteboard: NSPasteboard = .general
+    ) {
         let metric = focus.listedMetric(goal: metric)
         self.snapshot = snapshot
         self.metric = metric
         self.now = now
+        self.copyLinkPasteboard = copyLinkPasteboard
         _scope = State(initialValue: .opening(for: focus, in: snapshot, metric: metric, at: now))
         _repository = State(initialValue: focus.repository)
         _funnel = State(initialValue: focus.funnel)
     }
 
     var body: some View {
-        let pullRequests = snapshot.listedPullRequests(
+        let available = snapshot.listedPullRequests(for: metric, scope: scope, funnel: funnel, at: now)
+        let repositories = PullRequestWorkspaceRepositories(available, selected: repository)
+        let scoped = snapshot.listedPullRequests(
             for: metric, scope: scope, repository: repository, funnel: funnel, at: now
         )
+        let search = PullRequestWorkspaceSearch(searchText)
+        let pullRequests = search.results(in: scoped)
         VStack(alignment: .leading, spacing: 10) {
             // A picked day selects neither segment; its filter below says what is showing.
             Picker("Show", selection: $scope) {
@@ -132,16 +143,41 @@ struct PullRequestList: View {
             }
             .labelsHidden()
             .pickerStyle(.segmented)
+            PullRequestWorkspaceRepositoryPicker(repositories: repositories, selection: $repository)
             filters
+            HStack(spacing: 6) {
+                TextField("Search title, repo, # or URL", text: $searchText)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityLabel("Search pull requests")
+                    .help("Search this list by title, repository, #123, owner/repository#123, or a PR URL")
+                    .accessibilityHint("Search this list by title, repository, #123, owner/repository#123, or a PR URL")
+                if !searchText.isEmpty {
+                    Button {
+                        searchText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Clear search")
+                    .accessibilityLabel("Clear search")
+                }
+            }
+            HStack {
+                Text(search.isActive
+                     ? "\(pullRequests.count.formatted()) of \(scoped.count.formatted()) \(metric.noun)"
+                     : "\(pullRequests.count.formatted()) \(metric.noun)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 4)
+                PullRequestWorkspaceCopyLinksButton(pullRequests: pullRequests, pasteboard: copyLinkPasteboard)
+            }
             if pullRequests.isEmpty {
-                Text(emptyText)
+                Text(search.isActive ? "No matching PRs in this list. Try another search, change the filters, or clear the search." : emptyText)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 60)
             } else {
-                Text("\(pullRequests.count.formatted()) \(metric.noun)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 // A short list sizes itself; a long one scrolls within the popover's height.
                 ViewThatFits(in: .vertical) {
                     VStack(alignment: .leading, spacing: 0) { ForEach(pullRequests) { row($0) } }
@@ -209,27 +245,31 @@ struct PullRequestList: View {
 
     private func row(_ pr: PullRequest) -> some View {
         let date = (metric == .opened ? pr.createdAt : pr.mergedAt) ?? pr.createdAt
-        return Link(destination: pr.url) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(pr.title)
-                    .font(.callout)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                HStack(spacing: 4) {
-                    Text(pr.repository.nameWithOwner).lineLimit(1).truncationMode(.head)
-                    Spacer(minLength: 4)
-                    Text(snapshot.window.rowTime(date, withDay: scope == .month)).monospacedDigit()
+        return HStack(spacing: 6) {
+            Link(destination: pr.url) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(pr.title)
+                        .font(.callout)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                    HStack(spacing: 4) {
+                        Text(pr.repository.nameWithOwner).lineLimit(1).truncationMode(.head)
+                        Spacer(minLength: 4)
+                        Text(snapshot.window.rowTime(date, withDay: scope == .month)).monospacedDigit()
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .padding(.vertical, 5)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
-            .padding(.vertical, 5)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .help(pr.title)
+            .accessibilityLabel("\(pr.title), \(pr.repository.nameWithOwner)")
+            PullRequestWorkspaceCopyLinkButton(pullRequest: pr, pasteboard: copyLinkPasteboard)
+                .frame(width: 24, height: 24)
         }
-        .buttonStyle(.plain)
-        .help(pr.title)
-        .accessibilityLabel("\(pr.title), \(pr.repository.nameWithOwner)")
     }
 }
 

@@ -51,6 +51,7 @@ struct SettingsView: View {
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             WorkflowGoalPreview(plan: store.workflowGoalPlan())
+            WorkflowMenuBarSettings(store: store)
             row("Refresh every") {
                 Picker("Refresh every", selection: $store.refreshMinutes) {
                     ForEach([5, 15, 30, 60], id: \.self) { Text("\($0) min").tag($0) }

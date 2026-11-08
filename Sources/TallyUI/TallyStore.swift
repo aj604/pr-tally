@@ -37,6 +37,10 @@ public final class TallyStore {
             if schedule != nil { startSchedule() }
         }
     }
+    /// The number shown beside the monthly progress ring. Today's count remains the default.
+    public var menuBarDisplay: WorkflowMenuBarDisplay {
+        didSet { defaults.set(menuBarDisplay.rawValue, forKey: Keys.menuBarDisplay) }
+    }
 
     /// What the popover shows. Kept here rather than in the view because `MenuBarExtra` keeps the view's own
     /// state alive while the popover is closed; see `popoverClosed()`.
@@ -50,6 +54,7 @@ public final class TallyStore {
         static let metric = "metric"
         static let refreshMinutes = "refreshMinutes"
         static let notifiesOnGoal = "notifiesOnGoal"
+        static let menuBarDisplay = "workflowMenuBarDisplay"
         /// The goals announced this month, each named by month, metric and number. See `announceGoal(from:to:)`.
         static let goalAnnounced = "goalAnnounced"
     }
@@ -103,6 +108,8 @@ public final class TallyStore {
         notifiesOnGoal = defaults.object(forKey: Keys.notifiesOnGoal) as? Bool ?? true
         let savedMinutes = defaults.integer(forKey: Keys.refreshMinutes)
         refreshMinutes = savedMinutes > 0 ? savedMinutes : 15
+        menuBarDisplay = defaults.string(forKey: Keys.menuBarDisplay)
+            .flatMap(WorkflowMenuBarDisplay.init(rawValue:)) ?? .today
     }
 
     public var count: Int? { currentSnapshot()?.count(for: metric) }
@@ -158,9 +165,21 @@ public final class TallyStore {
             : snapshot.fetchedAt.formatted(.dateTime.month(.abbreviated).day().hour().minute())
     }
 
-    /// Today's count, shown beside the menu bar ring.
+    /// Today's count or monthly count/goal, as chosen in Settings, beside the menu bar ring.
     public func menuBarTitle(at now: Date = Date()) -> String {
-        currentSnapshot(at: now).map { $0.todayCount(for: metric, at: now).formatted() } ?? "–"
+        guard let snapshot = currentSnapshot(at: now) else { return "–" }
+        switch menuBarDisplay {
+        case .today: return snapshot.todayCount(for: metric, at: now).formatted()
+        case .monthProgress: return "\(snapshot.count(for: metric).formatted())/\(goal.formatted())"
+        }
+    }
+
+    /// Monthly progress celebrates reaching the goal; today's count keeps its daily quota highlight.
+    public func menuBarNumberIsGreen(at now: Date = Date()) -> Bool {
+        switch menuBarDisplay {
+        case .today: return menuBarBeatsPace(at: now)
+        case .monthProgress: return pace(at: now)?.status == .goalHit
+        }
     }
 
     /// Whether today's count has passed the daily quota, which turns the menu bar number green.
@@ -189,7 +208,8 @@ public final class TallyStore {
             guard menuBarIsStale else { return "PR Tally, loading" }
             return "PR Tally, not updating" + (fetchedTime(at: now).map { " since \($0)" } ?? "")
         }
-        let today = "\(menuBarTitle(at: now)) today\(menuBarBeatsPace(at: now) ? ", beating the daily pace" : "")"
+        let todayCount = currentSnapshot(at: now)?.todayCount(for: metric, at: now) ?? 0
+        let today = "\(todayCount.formatted()) today\(menuBarBeatsPace(at: now) ? ", beating the daily pace" : "")"
         let label = "\(today). \(pace.count.formatted()) of \(pace.goal.formatted()) \(metric.noun). \(pace.statusText)"
         guard menuBarIsStale, let time = fetchedTime(at: now) else { return label }
         return "\(label). Not updating since \(time)"

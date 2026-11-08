@@ -23,7 +23,7 @@ struct PRTallyApp: App {
             HStack(spacing: 4) {
                 if store.menuBarIsStale {
                     Image(nsImage: MenuBarGlyph.fadedImage(for: store.pace(), title: title))
-                } else if store.menuBarBeatsPace() {
+                } else if store.menuBarNumberIsGreen() {
                     Image(nsImage: MenuBarGlyph.image(for: store.pace(), greenTitle: title))
                 } else {
                     Image(nsImage: MenuBarGlyph.image(for: store.pace()))

@@ -146,9 +146,11 @@ struct PullRequestList: View {
             PullRequestWorkspaceRepositoryPicker(repositories: repositories, selection: $repository)
             filters
             HStack(spacing: 6) {
-                TextField("Search title or repository", text: $searchText)
+                TextField("Search title, repo, # or URL", text: $searchText)
                     .textFieldStyle(.roundedBorder)
                     .accessibilityLabel("Search pull requests")
+                    .help("Search this list by title, repository, #123, owner/repository#123, or a PR URL")
+                    .accessibilityHint("Search this list by title, repository, #123, owner/repository#123, or a PR URL")
                 if !searchText.isEmpty {
                     Button {
                         searchText = ""
@@ -171,7 +173,7 @@ struct PullRequestList: View {
                 PullRequestWorkspaceCopyLinksButton(pullRequests: pullRequests, pasteboard: copyLinkPasteboard)
             }
             if pullRequests.isEmpty {
-                Text(search.isActive ? "No matching PRs in this list. Try another title or repository, or clear the search." : emptyText)
+                Text(search.isActive ? "No matching PRs in this list. Try another search, change the filters, or clear the search." : emptyText)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 60)

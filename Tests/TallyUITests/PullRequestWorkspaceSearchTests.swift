@@ -84,7 +84,7 @@ import TallyCore
         host.frame = NSRect(x: 0, y: 0, width: 288, height: 420)
         host.layoutSubtreeIfNeeded()
         let fields = descendants(of: host).compactMap { $0 as? NSTextField }
-        #expect(fields.contains { $0.placeholderString == "Search title or repository" })
+        #expect(fields.contains { $0.placeholderString == "Search title, repo, # or URL" })
     }
 
     @Test func typingIntoTheHostedFieldUpdatesTheList() async throws {
@@ -99,7 +99,7 @@ import TallyCore
         host.layoutSubtreeIfNeeded()
         let originalHeight = host.fittingSize.height
         let field = try #require(descendants(of: host).compactMap { $0 as? NSTextField }.first {
-            $0.placeholderString == "Search title or repository"
+            $0.placeholderString == "Search title, repo, # or URL"
         })
         field.stringValue = "infra"
         field.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: field))

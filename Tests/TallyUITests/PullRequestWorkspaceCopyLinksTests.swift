@@ -62,7 +62,7 @@ import TallyCore
         defer { window.orderOut(nil) }
         let picker = try #require(descendants(of: host).compactMap { $0 as? NSPopUpButton }.first)
         let field = try #require(descendants(of: host).compactMap { $0 as? NSTextField }.first {
-            $0.placeholderString == "Search title or repository"
+            $0.placeholderString == "Search title, repo, # or URL"
         })
         let scope = try #require(descendants(of: host).compactMap { $0 as? NSSegmentedControl }.first)
 
@@ -111,7 +111,7 @@ import TallyCore
         let (host, window) = await hosted(pasteboard: pasteboard)
         defer { window.orderOut(nil) }
         let field = try #require(descendants(of: host).compactMap { $0 as? NSTextField }.first {
-            $0.placeholderString == "Search title or repository"
+            $0.placeholderString == "Search title, repo, # or URL"
         })
         field.stringValue = "no matches"
         field.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: field))

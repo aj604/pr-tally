@@ -89,7 +89,7 @@ import TallyCore
         defer { window.orderOut(nil) }
         let picker = try #require(descendants(of: host).compactMap { $0 as? NSPopUpButton }.first)
         let field = try #require(descendants(of: host).compactMap { $0 as? NSTextField }.first {
-            $0.placeholderString == "Search title or repository"
+            $0.placeholderString == "Search title, repo, # or URL"
         })
         picker.selectItem(withTitle: "me/app (1)")
         picker.sendAction(picker.action, to: picker.target)

@@ -50,6 +50,7 @@ struct MonthCharts: View {
                     Text(dailyCaption).font(.caption).foregroundStyle(.secondary).monospacedDigit()
                 }
                 dailyBars.frame(height: 62)
+                MonthInsightActivitySummary(snapshot: snapshot, metric: metric, now: now)
             }
         }
     }

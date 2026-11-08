@@ -27,6 +27,7 @@ You also get a notification when a refresh takes you past your goal. macOS asks 
 Requires macOS 14+, Xcode (or, before macOS 27, the Command Line Tools), and the [GitHub CLI](https://cli.github.com) logged in (`gh auth login`).
 
 ```sh
+./scripts/doctor.sh    # optional: checks the above and says how to fix what's missing
 ./scripts/install.sh
 ```
 
@@ -67,16 +68,9 @@ If a refresh fails with "GitHub returned HTTP 403:" and a message, the message i
 ## Development
 
 ```sh
-swift test                                    # run tests
-./scripts/bundle.sh                           # build dist/PR Tally.app
-swift run PopoverSnapshot out.png [dark]      # render the popover with live data, using your real login
-swift run PopoverSnapshot out.png <mode>      # render or run a fixture, with no network or login
+./scripts/doctor.sh                       # check your setup
+swift test --skip KeychainTokenTests      # run tests
+swift run PopoverSnapshot out.png overview  # render the popover from fixture data
 ```
 
-The fixture modes are `rollover` (waiting for a new month), `overview`, `drilldown` (the PR list), `menubar` (the ring's states, faded too, on light and dark menu bars) and `milestone`, which prints what the goal notification would say rather than writing an image.
-
-On macOS 27, `swift test` and `swift run` fail with `plugin for module 'SwiftUIMacros' not found` under the Command Line Tools. Run `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`, or prefix the command with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`.
-
-`KeychainTokenTests` adds and removes a throwaway item in your login keychain. Add `--skip KeychainTokenTests` to `swift test` to leave it out. Notifications only work from the bundled app, so they do nothing under `swift run`.
-
-`TallyCore` holds the GitHub client and pace logic, `TallyUI` the store and views, and `PRTally` the app entry point.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the code layout, test patterns, every snapshot mode, and the macOS 27 toolchain fix.

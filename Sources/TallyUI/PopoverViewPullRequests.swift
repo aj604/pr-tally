@@ -109,6 +109,7 @@ struct PullRequestList: View {
     @State private var scope: PullRequestScope
     @State private var repository: String?
     @State private var funnel: FunnelPart?
+    @State private var searchText = ""
 
     /// `metric` is the one the goal counts; the focus can ask for the other.
     init(snapshot: MonthSnapshot, metric: PRMetric, now: Date, focus: PullRequestFocus = .init()) {
@@ -122,9 +123,11 @@ struct PullRequestList: View {
     }
 
     var body: some View {
-        let pullRequests = snapshot.listedPullRequests(
+        let scoped = snapshot.listedPullRequests(
             for: metric, scope: scope, repository: repository, funnel: funnel, at: now
         )
+        let search = PullRequestWorkspaceSearch(searchText)
+        let pullRequests = search.results(in: scoped)
         VStack(alignment: .leading, spacing: 10) {
             // A picked day selects neither segment; its filter below says what is showing.
             Picker("Show", selection: $scope) {
@@ -133,15 +136,38 @@ struct PullRequestList: View {
             .labelsHidden()
             .pickerStyle(.segmented)
             filters
+            HStack(spacing: 6) {
+                TextField("Search title or repository", text: $searchText)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityLabel("Search pull requests")
+                if !searchText.isEmpty {
+                    Button {
+                        searchText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Clear search")
+                    .accessibilityLabel("Clear search")
+                }
+            }
+            if search.isActive {
+                Text("\(pullRequests.count.formatted()) of \(scoped.count.formatted()) \(metric.noun)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             if pullRequests.isEmpty {
-                Text(emptyText)
+                Text(search.isActive ? "No matching PRs in this list. Try another title or repository, or clear the search." : emptyText)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 60)
             } else {
-                Text("\(pullRequests.count.formatted()) \(metric.noun)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if !search.isActive {
+                    Text("\(pullRequests.count.formatted()) \(metric.noun)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 // A short list sizes itself; a long one scrolls within the popover's height.
                 ViewThatFits(in: .vertical) {
                     VStack(alignment: .leading, spacing: 0) { ForEach(pullRequests) { row($0) } }

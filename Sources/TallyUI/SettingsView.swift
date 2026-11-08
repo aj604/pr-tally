@@ -52,13 +52,7 @@ struct SettingsView: View {
                 .fixedSize(horizontal: false, vertical: true)
             WorkflowGoalPreview(plan: store.workflowGoalPlan())
             WorkflowMenuBarSettings(store: store)
-            row("Refresh every") {
-                Picker("Refresh every", selection: $store.refreshMinutes) {
-                    ForEach([5, 15, 30, 60], id: \.self) { Text("\($0) min").tag($0) }
-                }
-                .labelsHidden()
-                .frame(width: 90)
-            }
+            WorkflowRefreshSettings(store: store)
             Toggle("Notify when I hit my goal", isOn: $store.notifiesOnGoal)
                 .font(.callout)
                 .toggleStyle(.switch)

@@ -123,6 +123,8 @@ struct PullRequestList: View {
     }
 
     var body: some View {
+        let available = snapshot.listedPullRequests(for: metric, scope: scope, funnel: funnel, at: now)
+        let repositories = PullRequestWorkspaceRepositories(available, selected: repository)
         let scoped = snapshot.listedPullRequests(
             for: metric, scope: scope, repository: repository, funnel: funnel, at: now
         )
@@ -135,6 +137,17 @@ struct PullRequestList: View {
             }
             .labelsHidden()
             .pickerStyle(.segmented)
+            Picker("Repository", selection: $repository) {
+                Text("All repositories (\(repositories.totalCount.formatted()))").tag(String?.none)
+                ForEach(repositories.options) { option in
+                    Text("\(option.name) (\(option.count.formatted()))").tag(Optional(option.name))
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(maxWidth: .infinity)
+            .help("Filter this list by repository")
+            .accessibilityLabel("Repository")
             filters
             HStack(spacing: 6) {
                 TextField("Search title or repository", text: $searchText)

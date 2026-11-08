@@ -33,6 +33,16 @@ public struct PopoverView: View {
                 TopRepositories(repositories: snapshot.topRepositories(for: store.metric)) { repository in
                     showPullRequests(PullRequestFocus(repository: repository))
                 }
+            } else if store.automaticRefreshPaused, !store.isRefreshing {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Automatic refresh paused").font(.callout)
+                    Text("Refresh now to count this month's PRs, or resume automatic refresh in Settings.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if let summary = store.lastMonthSummary() {
+                        Text(summary).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: 100, alignment: .leading)
             } else if let summary = store.lastMonthSummary() {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Waiting for \(Date().formatted(.dateTime.month(.wide)))'s numbers.").font(.callout)

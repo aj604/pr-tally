@@ -51,6 +51,7 @@ struct MonthCharts: View {
                 }
                 dailyBars.frame(height: 62)
                 MonthInsightActivitySummary(snapshot: snapshot, metric: metric, now: now)
+                MonthInsightStreakSummary(snapshot: snapshot, metric: metric, now: now)
             }
         }
     }

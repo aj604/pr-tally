@@ -50,6 +50,7 @@ struct SettingsView: View {
             Text("Opened and merged PRs each keep their own monthly goal.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            WorkflowGoalPreview(plan: store.workflowGoalPlan())
             row("Refresh every") {
                 Picker("Refresh every", selection: $store.refreshMinutes) {
                     ForEach([5, 15, 30, 60], id: \.self) { Text("\($0) min").tag($0) }

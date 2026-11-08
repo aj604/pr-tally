@@ -133,4 +133,134 @@ private final class WorkflowGoalDefaults: UserDefaults, @unchecked Sendable {
         #expect(store.pace(at: now)?.goal == 1)
         #expect(store.menuBarBeatsPace(at: now))
     }
+    private func planningSnapshot(at now: Date, before: Int = 450, today: Int = 20) -> MonthSnapshot {
+        let window = MonthWindow(containing: now)
+        let yesterday = window.calendar.date(byAdding: .day, value: -1, to: now)!
+        func prs(_ count: Int, at date: Date) -> [PullRequest] {
+            (0..<count).map {
+                PullRequest(
+                    id: "\(date)-\($0)", title: "Fixture", url: URL(string: "https://github.com/me/app/pull/1")!,
+                    createdAt: date, mergedAt: date, repository: .init(nameWithOwner: "me/app")
+                )
+            }
+        }
+        return MonthSnapshot(
+            login: "fixture", window: window, opened: prs(before, at: yesterday) + prs(today, at: now),
+            merged: prs(9, at: yesterday) + prs(1, at: now), totalContributions: 0, fetchedAt: now
+        )
+    }
+
+    private func planningDate(month: Int = 11, day: Int = 16, year: Int = 2026) -> Date {
+        Calendar.current.date(from: DateComponents(year: year, month: month, day: day, hour: 12))!
+    }
+
+    @Test func editingTheGoalUpdatesThePlanWithoutFetchingAgain() async {
+        let now = planningDate()
+        let snapshot = planningSnapshot(at: now)
+        let store = TallyStore(defaults: WorkflowGoalDefaults()) { snapshot }
+        await store.refresh()
+        store.goal = 1000
+        let initial = store.workflowGoalPlan(at: now)
+        #expect(initial.dailyQuota == 1000.0 / 30)
+        #expect(initial.remaining == 530)
+        #expect(initial.moreToday == 17)
+        store.goal = 1200
+        let edited = store.workflowGoalPlan(at: now)
+        #expect(edited.dailyQuota == 40)
+        #expect(edited.remaining == 730)
+        #expect(edited.moreToday == 30)
+        #expect(store.snapshot == snapshot)
+    }
+
+    @Test func switchingMetricsPlansWithTheirOwnGoalsAndCounts() async {
+        let now = planningDate()
+        let snapshot = planningSnapshot(at: now)
+        let store = TallyStore(defaults: WorkflowGoalDefaults()) { snapshot }
+        await store.refresh()
+        store.goal = 1000
+        let opened = store.workflowGoalPlan(at: now)
+        store.metric = .merged
+        store.goal = 30
+        let merged = store.workflowGoalPlan(at: now)
+        #expect(merged.metric == .merged)
+        #expect(merged.dailyQuota == 1)
+        #expect(merged.remaining == 20)
+        #expect(merged.moreToday == 1)
+        #expect(merged.quotaText == "Average: 1 PRs merged per day this month.")
+        #expect(merged.progressText == "20 PRs merged left this month · 1 more today.")
+        store.metric = .opened
+        #expect(store.workflowGoalPlan(at: now) == opened)
+    }
+
+    @Test(arguments: [(2, 2028, 29), (11, 2026, 30), (12, 2026, 31)])
+    func missingNumbersStillPreviewTheCalendarQuota(month: Int, year: Int, days: Int) {
+        let now = planningDate(month: month, year: year)
+        let store = store()
+        store.goal = days * 10
+        let plan = store.workflowGoalPlan(at: now)
+        #expect(plan.dailyQuota == 10)
+        #expect(plan.remaining == nil)
+        #expect(plan.moreToday == nil)
+        #expect(plan.progressText == "Waiting for this month's numbers to calculate what's left.")
+    }
+
+    @Test func previousMonthNumbersAreNotTreatedAsCurrentProgress() async {
+        let snapshot = planningSnapshot(at: planningDate())
+        let store = TallyStore(defaults: WorkflowGoalDefaults()) { snapshot }
+        await store.refresh()
+        store.goal = 310
+        let plan = store.workflowGoalPlan(at: planningDate(month: 12, day: 1))
+        #expect(plan.dailyQuota == 10)
+        #expect(plan.remaining == nil)
+        #expect(plan.moreToday == nil)
+        #expect(plan.progressText == "Waiting for this month's numbers to calculate what's left.")
+    }
+
+    @Test(arguments: [470, 400])
+    func reachingOrPassingTheGoalShowsCompletion(goal: Int) async {
+        let now = planningDate()
+        let snapshot = planningSnapshot(at: now)
+        let store = TallyStore(defaults: WorkflowGoalDefaults()) { snapshot }
+        await store.refresh()
+        store.goal = goal
+        let plan = store.workflowGoalPlan(at: now)
+        #expect(plan.remaining == 0)
+        #expect(plan.moreToday == 0)
+        #expect(plan.progressText == "Goal reached for PRs opened.")
+    }
+
+    @Test func todaysShareCanBeCompleteBeforeTheMonthlyGoal() async {
+        let now = planningDate()
+        let snapshot = planningSnapshot(at: now)
+        let store = TallyStore(defaults: WorkflowGoalDefaults()) { snapshot }
+        await store.refresh()
+        store.goal = 480
+        let plan = store.workflowGoalPlan(at: now)
+        #expect(plan.remaining == 10)
+        #expect(plan.moreToday == 0)
+        #expect(plan.progressText == "10 PRs opened left this month · Today's share complete.")
+    }
+
+    @Test func theLastDayRequiresAllRemainingPRsToday() async {
+        let now = planningDate(day: 30)
+        let snapshot = planningSnapshot(at: now)
+        let store = TallyStore(defaults: WorkflowGoalDefaults()) { snapshot }
+        await store.refresh()
+        store.goal = 500
+        let plan = store.workflowGoalPlan(at: now)
+        #expect(plan.remaining == 30)
+        #expect(plan.moreToday == 30)
+    }
+
+    @Test func currentMonthWithNoPRsIsProgressRatherThanMissingData() async {
+        let now = planningDate()
+        let snapshot = planningSnapshot(at: now, before: 0, today: 0)
+        let store = TallyStore(defaults: WorkflowGoalDefaults()) { snapshot }
+        await store.refresh()
+        store.goal = 300
+        let plan = store.workflowGoalPlan(at: now)
+        #expect(plan.remaining == 300)
+        #expect(plan.moreToday == 20)
+        #expect(plan.progressText == "300 PRs opened left this month · 20 more today.")
+    }
 }

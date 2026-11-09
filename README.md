@@ -32,6 +32,8 @@ When the PR list opens on part of the month (a day from the charts or the goal-h
 - How big its PRs run: the median lines changed (added plus deleted), against the month's median when the slice is part of the month ("Median 270 lines changed · 2.6× the month's 103")
 - Which repos the PRs are in, unless you zoomed to one
 
+Zoomed to a repo or a part of the merge funnel, the arrows beside the heading step to the one beside it without going back to the month: the next or previous repo in the top repos' order (every repo with PRs in the count, not just the five shown, with "2 of 6" saying where you are), or the other part of the funnel. Stepping reopens the list on the new slice, clearing its search and filters.
+
 Open, draft and closed are only counted for PRs whose state GitHub reported, and size only for PRs counted since PR Tally started fetching it (the next refresh fills it in). The heading describes the slice you opened; filters you change inside the list don't change it.
 
 ## Install

@@ -2,18 +2,25 @@ import SwiftUI
 import TallyCore
 
 /// Above the pull request list when it opened on a slice of the month: names the slice and says what it amounts to
-/// beside the month.
+/// beside the month, with buttons to step sideways to the slice beside it.
 struct FocusInsightSummary: View {
     let snapshot: MonthSnapshot
     /// The metric the goal counts; the focus can ask for the other.
     let metric: PRMetric
     let focus: PullRequestFocus
     let now: Date
+    var step: (PullRequestFocus) -> Void = { _ in }
 
     var body: some View {
         if let text = FocusInsightText(snapshot: snapshot, metric: metric, focus: focus, now: now) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(text.title).font(.callout.weight(.semibold)).lineLimit(1).truncationMode(.middle)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(text.title).font(.callout.weight(.semibold)).lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 0)
+                    if let stepper = FocusInsightStep(snapshot: snapshot, metric: metric, focus: focus) {
+                        stepButtons(stepper)
+                    }
+                }
                 ForEach(text.lines, id: \.self) { Text($0) }
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -22,6 +29,27 @@ struct FocusInsightSummary: View {
             }
             .help(text.help)
         }
+    }
+
+    private func stepButtons(_ stepper: FocusInsightStep) -> some View {
+        HStack(spacing: 4) {
+            stepButton(stepper.previous, systemImage: "chevron.left", direction: "Previous", kind: stepper.kind)
+            Text(stepper.position).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            stepButton(stepper.next, systemImage: "chevron.right", direction: "Next", kind: stepper.kind)
+        }
+        .buttonStyle(.borderless)
+        .fixedSize()
+    }
+
+    private func stepButton(
+        _ neighbor: FocusInsightStep.Neighbor?, systemImage: String, direction: String, kind: String
+    ) -> some View {
+        Button { neighbor.map { step($0.focus) } } label: {
+            Image(systemName: systemImage).font(.caption.weight(.semibold))
+        }
+        .disabled(neighbor == nil)
+        .help(neighbor.map { "\(direction) \(kind): \($0.title)" } ?? "No \(direction.lowercased()) \(kind)")
+        .accessibilityLabel(neighbor.map { "\(direction) \(kind): \($0.title)" } ?? "No \(direction.lowercased()) \(kind)")
     }
 }
 

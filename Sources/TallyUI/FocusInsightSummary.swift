@@ -54,8 +54,9 @@ struct FocusInsightSummary: View {
 }
 
 /// The words for a slice: a title saying where the list is zoomed to, then what the slice amounts to, how its PRs
-/// stand, how big they run beside the month's, and where they are. Nil for the unfocused list, which is the whole month
-/// the summary already describes.
+/// stand, how big they run beside the month's, and where they are. The slice is the one the list opens on, so the other
+/// metric's figure, which opens the list on today when today has any, is described as today rather than the month. Nil
+/// for the unfocused list, which is the whole month the summary already describes.
 struct FocusInsightText: Equatable {
     let title: String
     let lines: [String]
@@ -65,26 +66,32 @@ struct FocusInsightText: Equatable {
         guard focus.day != nil || focus.repository != nil || focus.metric != nil || focus.funnel != nil else { return nil }
         let metric = focus.listedMetric(goal: goal)
         let window = snapshot.window
+        let today = window.dayIndex(of: now)
+        // The slice is what the list opens on, which for the other metric's figure is today when today has any.
+        let scope = PullRequestScope.opening(for: focus, in: snapshot, metric: metric, at: now)
+        let day: Int? = switch scope {
+        case .today: today
+        case .day(let day): day
+        case .month: nil
+        }
         let slice = snapshot.listedPullRequests(
-            for: metric, scope: focus.day.map { .day($0) } ?? .month, repository: focus.repository,
-            funnel: focus.funnel, at: now
+            for: metric, scope: scope, repository: focus.repository, funnel: focus.funnel, at: now
         )
         let insight = FocusInsight(pullRequests: slice, monthCount: snapshot.count(for: metric))
         let verb = metric.rawValue
-        let today = window.dayIndex(of: now)
 
         var titles: [String] = []
-        if let day = focus.day { titles.append(day == today ? "Today" : Self.dayTitle(day, in: window)) }
+        if let day, focus.day != nil { titles.append(day == today ? "Today" : Self.dayTitle(day, in: window)) }
         if let repository = focus.repository { titles.append(repository) }
         switch focus.funnel {
         case .notMerged: titles.append("Opened, not merged")
         case .carriedIn: titles.append("Opened before \(window.monthTitle)")
-        case nil: if titles.isEmpty { titles.append("\(metric.title) this month") }
+        case nil: if titles.isEmpty { titles.append("\(metric.title) \(day == nil ? "this month" : "today")") }
         }
         title = titles.joined(separator: " · ")
 
         var lines: [String] = []
-        if focus.day != nil, let average = snapshot.averagePerDay(for: metric, at: now), average > 0 {
+        if day != nil, let average = snapshot.averagePerDay(for: metric, at: now), average > 0 {
             let ratio = Double(insight.count) / average
             let size = insight.count == 0 ? "None \(verb)" : "\(insight.count.formatted()) \(verb)"
             let compared = ratio == 0 ? "an average day has \(average.formatted(.number.precision(.fractionLength(0...1))))"
@@ -137,6 +144,17 @@ struct FocusInsightText: Equatable {
 
         help = "Compared with every PR \(verb) this month. Merge times run from opening to merging; "
             + "open, draft and closed count only PRs whose state GitHub reported. Size is lines added plus deleted."
+    }
+
+    /// The help on the other metric's figure, naming the PRs the list will open on: today's when today has any, as
+    /// the heading will, since promising the month's count over a list of today's misleads.
+    static func otherMetricHelp(snapshot: MonthSnapshot, metric goal: PRMetric, now: Date) -> String {
+        let metric: PRMetric = goal == .opened ? .merged : .opened
+        let focus = PullRequestFocus(metric: metric)
+        if PullRequestScope.opening(for: focus, in: snapshot, metric: metric, at: now) == .today {
+            return "List the \(snapshot.todayCount(for: metric, at: now).formatted()) \(metric.noun) today"
+        }
+        return "List the \(snapshot.count(for: metric).formatted()) \(metric.noun)"
     }
 
     /// A zero-based day with its weekday, in the zone the month was counted in, since "Tue" says more than "Nov 3".

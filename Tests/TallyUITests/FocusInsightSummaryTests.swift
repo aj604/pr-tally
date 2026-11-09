@@ -78,6 +78,22 @@ private func text(_ focus: PullRequestFocus, metric: PRMetric = .opened) -> Focu
         #expect(text.lines == ["3 merged this month", "Median 6h from open to merge", "2 repos, most in me/app (2)"])
     }
 
+    @Test func theOtherMetricWithMergesTodayIsDescribedAsTodayLikeTheListItOpens() throws {
+        // Two merged today on top of the three merged on the 3rd and 5th, so the list opens on Today.
+        let merged = snapshot.merged + [
+            pr("t1", day: 10, mergedAfter: 1, state: .merged), pr("t2", day: 10, mergedAfter: 3, state: .merged),
+        ]
+        let busy = MonthSnapshot(
+            login: "me", window: snapshot.window, opened: snapshot.opened, merged: merged, totalContributions: 0,
+            fetchedAt: now
+        )
+        let text = try #require(FocusInsightText(snapshot: busy, metric: .opened, focus: PullRequestFocus(metric: .merged), now: now))
+        #expect(text.title == "Merged today")
+        #expect(text.lines == ["2 merged · 4× an average day", "Median 2h from open to merge", "All in me/app"])
+        #expect(FocusInsightText.otherMetricHelp(snapshot: busy, metric: .opened, now: now) == "List the 2 PRs merged today")
+        #expect(FocusInsightText.otherMetricHelp(snapshot: snapshot, metric: .opened, now: now) == "List the 3 PRs merged")
+    }
+
     @Test func aFunnelPartIsNamedAndComparedWithItsMetric() throws {
         let text = try #require(text(PullRequestFocus(funnel: .notMerged)))
         #expect(text.title == "Opened, not merged")

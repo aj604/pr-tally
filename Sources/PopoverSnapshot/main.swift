@@ -3,7 +3,7 @@ import SwiftUI
 import TallyCore
 @_spi(Fixtures) import TallyUI
 
-// Usage: swift run PopoverSnapshot <output.png> [light|dark|menubar|rollover|drilldown|overview|zoom-day|zoom-repo|milestone]
+// Usage: swift run PopoverSnapshot <output.png> [light|dark|menubar|rollover|drilldown|overview|zoom-day|zoom-repo|zoom-metric|milestone]
 @MainActor
 func write(_ view: some View, to path: String) throws {
     let renderer = ImageRenderer(content: view)
@@ -118,9 +118,12 @@ func renderRollover(to path: String) async throws {
 }
 
 /// A busy day in a few repositories, with the pull request list open (or, for `overview`, closed), using no network.
-/// `focusDay` (zero-based) or `focusRepository` opens the list zoomed to it, as from the charts or the top repos.
+/// `focusDay` (zero-based) or `focusRepository` opens the list zoomed to it, as from the charts or the top repos, and
+/// `focusMetric` on the count the goal doesn't follow, as from that figure on the summary.
 @MainActor
-func renderFixture(to path: String, listOpen: Bool, focusDay: Int? = nil, focusRepository: String? = nil) async throws {
+func renderFixture(
+    to path: String, listOpen: Bool, focusDay: Int? = nil, focusRepository: String? = nil, focusMetric: PRMetric? = nil
+) async throws {
     let now = Date()
     let window = MonthWindow(containing: now)
     let startOfToday = window.calendar.startOfDay(for: now)
@@ -146,11 +149,14 @@ func renderFixture(to path: String, listOpen: Bool, focusDay: Int? = nil, focusR
             isDraft: index == 3, additions: size(repo, index).additions, deletions: size(repo, index).deletions
         )
     }
+    // Two of today's merged within the hour, so today has merges as well as openings.
     let today = titles.enumerated().map { index, entry in
-        PullRequest(
+        let createdAt = max(startOfToday, now.addingTimeInterval(-TimeInterval(index) * 3_100 - 60))
+        let mergedAt = (1...2).contains(index) ? min(now, createdAt.addingTimeInterval(1_500)) : nil
+        return PullRequest(
             id: "today\(index)", title: entry.1, url: URL(string: "https://github.com/\(entry.0)/pull/\(900 + index)")!,
-            createdAt: max(startOfToday, now.addingTimeInterval(-TimeInterval(index) * 3_100 - 60)), mergedAt: nil,
-            repository: .init(nameWithOwner: entry.0), state: .open, isDraft: index == 4,
+            createdAt: createdAt, mergedAt: mergedAt,
+            repository: .init(nameWithOwner: entry.0), state: mergedAt != nil ? .merged : .open, isDraft: index == 4,
             additions: size(entry.0, index).additions, deletions: size(entry.0, index).deletions
         )
     }
@@ -161,7 +167,7 @@ func renderFixture(to path: String, listOpen: Bool, focusDay: Int? = nil, focusR
     let store = TallyStore(defaults: ScratchDefaults(), cache: nil) { snapshot }
     await store.refresh()
     if listOpen { store.screen = .pullRequests }
-    let view = PopoverView(store: store, focusDay: focusDay, focusRepository: focusRepository)
+    let view = PopoverView(store: store, focusDay: focusDay, focusRepository: focusRepository, focusMetric: focusMetric)
         .background(Color(nsColor: .windowBackgroundColor))
     try writeHosted(view, to: path)
 }
@@ -229,10 +235,13 @@ if mode == "milestone" {
     try await renderFixture(to: path, listOpen: true, focusDay: max(0, today - 1))
 } else if mode == "zoom-repo" {
     try await renderFixture(to: path, listOpen: true, focusRepository: "acme/infra")
+} else if mode == "zoom-metric" {
+    // The merged count, as from its figure beside the opened count the goal follows.
+    try await renderFixture(to: path, listOpen: true, focusMetric: .merged)
 } else if mode == "light" || mode == "dark" {
     try await renderPopover(to: path, scheme: mode == "dark" ? .dark : .light)
 } else {
     // Only `light` and `dark` use your real login, so a mistyped fixture mode must not fall through to them.
-    FileHandle.standardError.write(Data("Unknown mode \(mode). Use light, dark, menubar, rollover, drilldown, overview, zoom-day, zoom-repo or milestone.\n".utf8))
+    FileHandle.standardError.write(Data("Unknown mode \(mode). Use light, dark, menubar, rollover, drilldown, overview, zoom-day, zoom-repo, zoom-metric or milestone.\n".utf8))
     exit(2)
 }

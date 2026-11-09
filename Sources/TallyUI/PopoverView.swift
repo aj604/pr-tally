@@ -13,10 +13,14 @@ public struct PopoverView: View {
         self.store = store
     }
 
-    /// Opens on the pull request list zoomed to a zero-based day or a repository, so fixtures can render a zoom.
-    @_spi(Fixtures) public init(store: TallyStore, focusDay day: Int? = nil, focusRepository repository: String? = nil) {
+    /// Opens on the pull request list zoomed to a zero-based day, a repository or the count the goal doesn't follow, so
+    /// fixtures can render a zoom.
+    @_spi(Fixtures) public init(
+        store: TallyStore, focusDay day: Int? = nil, focusRepository repository: String? = nil,
+        focusMetric metric: PRMetric? = nil
+    ) {
         self.store = store
-        _listFocus = State(initialValue: PullRequestFocus(day: day, repository: repository))
+        _listFocus = State(initialValue: PullRequestFocus(day: day, repository: repository, metric: metric))
     }
 
     public var body: some View {
@@ -209,7 +213,7 @@ public struct PopoverView: View {
         if count > 0 {
             Button { showPullRequests(PullRequestFocus(metric: other)) } label: { stat.contentShape(Rectangle()) }
                 .buttonStyle(.plain)
-                .help("List the \(count.formatted()) \(other.noun)")
+                .help(FocusInsightText.otherMetricHelp(snapshot: snapshot, metric: store.metric, now: Date()))
         } else {
             stat
         }

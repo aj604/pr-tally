@@ -21,9 +21,12 @@ struct PullRequestWorkspaceMetric: Equatable {
         options = PRMetric.allCases.map { Option(metric: $0, count: count($0)) }
     }
 
-    /// The funnel part the list keeps after switching to `metric`.
-    static func funnel(_ funnel: FunnelPart?, keptFor metric: PRMetric) -> FunnelPart? {
-        funnel?.metric == metric ? funnel : nil
+    /// The status choice the list keeps after switching to `metric`: any but a funnel part the metric doesn't count.
+    static func choice(
+        _ choice: PullRequestWorkspaceStatusFilter.Choice?, keptFor metric: PRMetric
+    ) -> PullRequestWorkspaceStatusFilter.Choice? {
+        guard let part = choice?.funnelPart else { return choice }
+        return part.metric == metric ? choice : nil
     }
 
     static func name(_ metric: PRMetric) -> String { metric == .opened ? "Opened" : "Merged" }

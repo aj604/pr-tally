@@ -6,15 +6,24 @@ import TallyCore
 /// one choice rather than a scan. A PR whose state isn't known (a snapshot saved before states were fetched, which
 /// is what a relaunch shows until the first refresh) matches no label, so it gets its own choice and its own count
 /// instead of silently dropping out of the others.
+///
+/// A part of the merge funnel ("Not merged", "Older PRs") is one more choice in the same menu rather than a
+/// filter of its own, so the list opened from the funnel spends no row on it and either part can be picked from inside
+/// the list. Which PRs a part holds depends on the whole month, not on the PR, so the caller passes its members.
 struct PullRequestWorkspaceStatusFilter: Equatable {
+    /// The ids of the PRs in each funnel part the list's metric counts.
+    typealias FunnelMembers = [FunnelPart: Set<String>]
+
     enum Choice: Hashable {
+        case funnel(FunnelPart)
         case status(PullRequestWorkspaceStatus.Kind)
         case review(PullRequest.ReviewDecision)
         case checksFailing
         case unknown
 
-        func matches(_ pr: PullRequest) -> Bool {
+        func matches(_ pr: PullRequest, funnel members: FunnelMembers = [:]) -> Bool {
             switch self {
+            case .funnel(let part): members[part]?.contains(pr.id) ?? false
             case .status(let kind): PullRequestWorkspaceStatus(pr)?.kind == kind
             case .review(let decision): PullRequestWorkspaceReview(pr)?.decision == decision
             case .checksFailing: PullRequestWorkspaceChecks(pr) != nil
@@ -22,17 +31,25 @@ struct PullRequestWorkspaceStatusFilter: Equatable {
             }
         }
 
+        /// The funnel part this choice is, if it is one.
+        var funnelPart: FunnelPart? {
+            if case .funnel(let part) = self { part } else { nil }
+        }
+
         /// Whether the menu sets this choice apart from the one above it: review and checks each answer a different
         /// question from where the PR stands.
         var startsGroup: Bool {
             switch self {
             case .review, .checksFailing: true
-            case .status, .unknown: false
+            case .funnel, .status, .unknown: false
             }
         }
 
         var title: String {
             switch self {
+            case .funnel(.notMerged): "Not merged"
+            // Named as the summary's link to it names them ("2 older PRs also merged"), and short enough for the picker.
+            case .funnel(.carriedIn): "Older PRs"
             case .status(.open): "Open"
             case .status(.draft): "Draft"
             case .status(.merged): "Merged"
@@ -53,7 +70,15 @@ struct PullRequestWorkspaceStatusFilter: Equatable {
         var title: String { "\(choice.title) (\(count.formatted()))" }
     }
 
-    /// Choices in reading order: where the PR stands, then where review stands, then whether checks fail, then what isn't known.
+    /// The funnel parts `metric` counts, with the PRs in each.
+    static func funnelMembers(for metric: PRMetric, in snapshot: MonthSnapshot) -> FunnelMembers {
+        Dictionary(uniqueKeysWithValues: [FunnelPart.notMerged, .carriedIn].filter { $0.metric == metric }.map {
+            ($0, Set($0.pullRequests(in: snapshot).map(\.id)))
+        })
+    }
+
+    /// Choices in reading order: where the PR stands, then where review stands, then whether checks fail, then what
+    /// isn't known. Funnel parts lead, above them, when the metric has any.
     static let order: [Choice] = [
         .status(.open), .status(.draft), .status(.merged), .status(.closed),
         .review(.reviewRequired), .review(.changesRequested), .review(.approved),
@@ -65,11 +90,14 @@ struct PullRequestWorkspaceStatusFilter: Equatable {
     private let selected: Choice?
 
     /// Only choices some PR matches are offered, plus `selected`, which stays visible and removable when a different
-    /// day or repository leaves it empty.
-    init(_ pullRequests: [PullRequest], selected: Choice? = nil) {
-        options = Self.order.compactMap { choice in
-            let count = pullRequests.filter(choice.matches).count
-            return count > 0 || choice == selected ? Option(choice: choice, count: count) : nil
+    /// day or repository leaves it empty. A funnel part that holds every PR in the list, or none, tells nothing apart
+    /// (every PR opened today may be unmerged), so it is offered only while it narrows the list or is selected.
+    init(_ pullRequests: [PullRequest], funnel members: FunnelMembers = [:], selected: Choice? = nil) {
+        let parts = [FunnelPart.notMerged, .carriedIn].filter { members[$0] != nil }.map(Choice.funnel)
+        options = (parts + Self.order).compactMap { choice in
+            let count = pullRequests.filter { choice.matches($0, funnel: members) }.count
+            let narrows = choice.funnelPart == nil ? count > 0 : count > 0 && count < pullRequests.count
+            return narrows || choice == selected ? Option(choice: choice, count: count) : nil
         }
         totalCount = pullRequests.count
         self.selected = selected
@@ -80,8 +108,8 @@ struct PullRequestWorkspaceStatusFilter: Equatable {
     /// An active filter is always offered, since the picker is also how it is removed.
     var isOffered: Bool { selected != nil || options.count >= 2 }
 
-    static func apply(_ choice: Choice?, to pullRequests: [PullRequest]) -> [PullRequest] {
-        choice.map { choice in pullRequests.filter(choice.matches) } ?? pullRequests
+    static func apply(_ choice: Choice?, to pullRequests: [PullRequest], funnel members: FunnelMembers = [:]) -> [PullRequest] {
+        choice.map { choice in pullRequests.filter { choice.matches($0, funnel: members) } } ?? pullRequests
     }
 }
 
@@ -95,7 +123,7 @@ struct PullRequestWorkspaceStatusPicker: NSViewRepresentable {
         picker.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         picker.cell?.lineBreakMode = .byTruncatingTail
         picker.setAccessibilityLabel("Status")
-        picker.toolTip = "Filter this list by status or review"
+        picker.toolTip = "Filter this list by status, review, or merge funnel"
         picker.target = context.coordinator
         picker.action = #selector(Coordinator.selectStatus(_:))
         return picker
@@ -107,8 +135,12 @@ struct PullRequestWorkspaceStatusPicker: NSViewRepresentable {
         picker.addItem(withTitle: "All statuses")
         var previous: PullRequestWorkspaceStatusFilter.Choice?
         for option in filter.options {
-            // Review and checks are different questions from state, so each group gets a rule above it.
-            if option.choice.startsGroup, !Self.sameGroup(previous, option.choice) { picker.menu?.addItem(.separator()) }
+            // Review and checks are different questions from state, so each group gets a rule above it, as does the
+            // first state after the funnel parts.
+            let leavesFunnel = previous?.funnelPart != nil && option.choice.funnelPart == nil
+            if leavesFunnel || option.choice.startsGroup && !Self.sameGroup(previous, option.choice) {
+                picker.menu?.addItem(.separator())
+            }
             picker.addItem(withTitle: option.title)
             picker.lastItem?.representedObject = option.choice
             previous = option.choice

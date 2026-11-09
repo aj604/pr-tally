@@ -36,11 +36,13 @@ import TallyCore
     }
 
     @Test func switchingKeepsOnlyAFunnelPartTheNewMetricCounts() {
-        #expect(PullRequestWorkspaceMetric.funnel(.notMerged, keptFor: .opened) == .notMerged)
-        #expect(PullRequestWorkspaceMetric.funnel(.notMerged, keptFor: .merged) == nil)
-        #expect(PullRequestWorkspaceMetric.funnel(.carriedIn, keptFor: .merged) == .carriedIn)
-        #expect(PullRequestWorkspaceMetric.funnel(.carriedIn, keptFor: .opened) == nil)
-        #expect(PullRequestWorkspaceMetric.funnel(nil, keptFor: .opened) == nil)
+        #expect(PullRequestWorkspaceMetric.choice(.funnel(.notMerged), keptFor: .opened) == .funnel(.notMerged))
+        #expect(PullRequestWorkspaceMetric.choice(.funnel(.notMerged), keptFor: .merged) == nil)
+        #expect(PullRequestWorkspaceMetric.choice(.funnel(.carriedIn), keptFor: .merged) == .funnel(.carriedIn))
+        #expect(PullRequestWorkspaceMetric.choice(.funnel(.carriedIn), keptFor: .opened) == nil)
+        #expect(PullRequestWorkspaceMetric.choice(nil, keptFor: .opened) == nil)
+        // A status or review means the same thing in either list, so it stays.
+        #expect(PullRequestWorkspaceMetric.choice(.review(.approved), keptFor: .merged) == .review(.approved))
     }
 
     @Test func pickerNamesTheShowingMetricAndCountsBoth() async throws {
@@ -105,6 +107,47 @@ import TallyCore
         defer { window.orderOut(nil) }
         #expect(try metricPicker(in: host).itemTitles == ["Merged", "Opened (4)", "Merged (1)"])
         #expect(try searchField(in: host).placeholderString == "Search 1 PR merged")
+    }
+
+    @Test func aFunnelPartOpensChosenInTheStatusMenuAndAllStatusesRemovesIt() async throws {
+        let (host, window) = await hosted(focus: .init(funnel: .notMerged))
+        defer { window.orderOut(nil) }
+        let status = try statusPicker(in: host)
+        #expect(status.titleOfSelectedItem == "Not merged (3)")
+        #expect(status.itemTitles.filter { !$0.isEmpty } == [
+            "All statuses", "Not merged (3)", "Merged (1)", "Status not known yet (3)",
+        ])
+        #expect(try searchField(in: host).placeholderString == "Search 3 PRs opened")
+        // The status menu sits beside the repository menu, so the part takes no row of its own.
+        let repositoryFrame = try host.convert(repositoryPicker(in: host).bounds, from: repositoryPicker(in: host))
+        let statusFrame = host.convert(status.bounds, from: status)
+        #expect(abs(statusFrame.midY - repositoryFrame.midY) < 2 && statusFrame.maxX <= 288)
+
+        select("All statuses", in: status)
+        await settle(host)
+        #expect(try searchField(in: host).placeholderString == "Search 4 PRs opened")
+        #expect(try statusPicker(in: host).titleOfSelectedItem == "All statuses")
+    }
+
+    @Test func theOlderMergesCanBeChosenFromInsideTheMergedList() async throws {
+        let (host, window) = await hosted()
+        defer { window.orderOut(nil) }
+        try select("Merged (2)", in: metricPicker(in: host))
+        await settle(host)
+        let status = try statusPicker(in: host)
+        #expect(status.itemTitles.filter { !$0.isEmpty } == ["All statuses", "Older PRs (1)", "Merged (2)"])
+        select("Older PRs (1)", in: status)
+        await settle(host)
+        #expect(try searchField(in: host).placeholderString == "Search 1 PR merged")
+        #expect(try repositoryPicker(in: host).itemTitles == ["All repositories (1)", "acme/infra (1)"])
+        // The opened list has no such part, so its count is the whole opened list.
+        #expect(try metricPicker(in: host).itemTitles == ["Merged", "Opened (4)", "Merged (1)"])
+    }
+
+    private func statusPicker(in host: NSView) throws -> NSPopUpButton {
+        try #require(descendants(of: host).compactMap { $0 as? NSPopUpButton }.first {
+            $0.accessibilityLabel() == "Status"
+        })
     }
 
     private func hosted(focus: PullRequestFocus = .init()) async -> (NSHostingView<PullRequestList>, NSWindow) {

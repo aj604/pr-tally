@@ -104,6 +104,43 @@ private let mixed = [
         #expect(PullRequestWorkspaceStatusFilter([], selected: .status(.open)).isOffered)
     }
 
+    @Test func funnelPartsLeadTheChoicesAndMatchTheirMembers() {
+        let members: PullRequestWorkspaceStatusFilter.FunnelMembers = [.notMerged: ["1", "4", "5"]]
+        let filter = PullRequestWorkspaceStatusFilter(mixed, funnel: members)
+        #expect(filter.options.first?.title == "Not merged (3)")
+        #expect(filter.options.dropFirst().first?.title == "Open (3)")
+        #expect(PullRequestWorkspaceStatusFilter.apply(.funnel(.notMerged), to: mixed, funnel: members).map(\.id) == ["1", "4", "5"])
+        // Without its members a part matches nothing, rather than everything.
+        #expect(PullRequestWorkspaceStatusFilter.apply(.funnel(.carriedIn), to: mixed, funnel: members).isEmpty)
+    }
+
+    @Test func aFunnelPartIsOfferedOnlyWhileItNarrowsTheList() {
+        let all: PullRequestWorkspaceStatusFilter.FunnelMembers = [.notMerged: Set(mixed.map(\.id))]
+        #expect(!PullRequestWorkspaceStatusFilter(mixed, funnel: all).options.contains { $0.choice == .funnel(.notMerged) })
+        let none: PullRequestWorkspaceStatusFilter.FunnelMembers = [.carriedIn: []]
+        #expect(!PullRequestWorkspaceStatusFilter(mixed, funnel: none).options.contains { $0.choice == .funnel(.carriedIn) })
+        // Chosen, it stays so it can be removed, even on a day where it holds every PR or none.
+        let chosen = PullRequestWorkspaceStatusFilter(mixed, funnel: none, selected: .funnel(.carriedIn))
+        #expect(chosen.options.first?.title == "Older PRs (0)")
+        #expect(chosen.isOffered)
+    }
+
+    @Test func eachMetricOffersOnlyItsOwnFunnelPart() {
+        let now = november.addingTimeInterval(10 * 86_400)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let older = PullRequest(
+            id: "old", title: "Old", url: URL(string: "https://github.com/me/app/pull/9")!,
+            createdAt: november.addingTimeInterval(-5 * 86_400), mergedAt: now, repository: .init(nameWithOwner: "me/app")
+        )
+        let snapshot = MonthSnapshot(
+            login: "me", window: MonthWindow(containing: now, calendar: calendar), opened: Array(mixed.prefix(5)),
+            merged: [mixed[5], older], totalContributions: 0, fetchedAt: now
+        )
+        #expect(PullRequestWorkspaceStatusFilter.funnelMembers(for: .opened, in: snapshot) == [.notMerged: ["1", "2", "3", "4", "5"]])
+        #expect(PullRequestWorkspaceStatusFilter.funnelMembers(for: .merged, in: snapshot) == [.carriedIn: ["old"]])
+    }
+
     @Test func noChoiceLeavesTheListAlone() {
         #expect(PullRequestWorkspaceStatusFilter.apply(nil, to: mixed) == mixed)
     }

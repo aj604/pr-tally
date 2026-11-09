@@ -34,7 +34,7 @@ struct PullRequestFocus: Equatable {
 }
 
 /// A part of the merge funnel the list can narrow to, each with the metric that counts its PRs.
-enum FunnelPart: Equatable {
+enum FunnelPart: Hashable {
     /// Opened this month and not merged yet.
     case notMerged
     /// Merged this month after being opened in an earlier month.
@@ -88,13 +88,6 @@ extension MonthWindow {
         style.timeZone = calendar.timeZone
         return date.formatted(style)
     }
-
-    /// The month's short name, in the zone the month was counted in.
-    var monthTitle: String {
-        var style = Date.FormatStyle.dateTime.month(.abbreviated)
-        style.timeZone = calendar.timeZone
-        return start.formatted(style)
-    }
 }
 
 /// The pull requests that make up the count, each opening on GitHub when clicked.
@@ -107,7 +100,7 @@ struct PullRequestList: View {
     @State private var metric: PRMetric
     @State private var wholeMonth: Bool
     @State private var repository: String?
-    @State private var funnel: FunnelPart?
+    /// A status, review or merge-funnel part, picked from one menu.
     @State private var statusChoice: PullRequestWorkspaceStatusFilter.Choice?
     @State private var searchText = ""
 
@@ -125,39 +118,41 @@ struct PullRequestList: View {
         _day = State(initialValue: PullRequestWorkspaceDayStepper.openingDay(for: scope, in: snapshot.window, at: now))
         _wholeMonth = State(initialValue: scope == .month)
         _repository = State(initialValue: focus.repository)
-        _funnel = State(initialValue: focus.funnel)
+        _statusChoice = State(initialValue: focus.funnel.map { .funnel($0) })
     }
 
     /// Switching keeps the day, repository, status and search, and drops a funnel part the new metric can't match.
     private var metricSelection: Binding<PRMetric> {
         Binding(get: { metric }) { newValue in
             metric = newValue
-            funnel = PullRequestWorkspaceMetric.funnel(funnel, keptFor: newValue)
+            statusChoice = PullRequestWorkspaceMetric.choice(statusChoice, keptFor: newValue)
         }
     }
+
+    private var funnel: FunnelPart? { statusChoice?.funnelPart }
 
     private var stepper: PullRequestWorkspaceDayStepper { .init(day: day, in: snapshot.window, at: now) }
 
     private var scope: PullRequestScope { wholeMonth ? .month : stepper.scope }
 
     var body: some View {
-        let available = snapshot.listedPullRequests(for: metric, scope: scope, funnel: funnel, at: now)
-        let inRepository = snapshot.listedPullRequests(
-            for: metric, scope: scope, repository: repository, funnel: funnel, at: now
-        )
+        let members = PullRequestWorkspaceStatusFilter.funnelMembers(for: metric, in: snapshot)
+        let available = snapshot.listedPullRequests(for: metric, scope: scope, at: now)
+        let inRepository = snapshot.listedPullRequests(for: metric, scope: scope, repository: repository, at: now)
         // Each picker counts what the other has left, so a choice never offers a count the list won't show.
         let repositories = PullRequestWorkspaceRepositories(
-            PullRequestWorkspaceStatusFilter.apply(statusChoice, to: available), selected: repository
+            PullRequestWorkspaceStatusFilter.apply(statusChoice, to: available, funnel: members), selected: repository
         )
-        let statuses = PullRequestWorkspaceStatusFilter(inRepository, selected: statusChoice)
-        let scoped = PullRequestWorkspaceStatusFilter.apply(statusChoice, to: inRepository)
+        let statuses = PullRequestWorkspaceStatusFilter(inRepository, funnel: members, selected: statusChoice)
+        let scoped = PullRequestWorkspaceStatusFilter.apply(statusChoice, to: inRepository, funnel: members)
         let search = PullRequestWorkspaceSearch(searchText)
         let pullRequests = search.results(in: scoped)
         let metrics = PullRequestWorkspaceMetric { other in
-            other == metric ? scoped.count : PullRequestWorkspaceStatusFilter.apply(statusChoice, to: snapshot.listedPullRequests(
-                for: other, scope: scope, repository: repository,
-                funnel: PullRequestWorkspaceMetric.funnel(funnel, keptFor: other), at: now
-            )).count
+            other == metric ? scoped.count : PullRequestWorkspaceStatusFilter.apply(
+                PullRequestWorkspaceMetric.choice(statusChoice, keptFor: other),
+                to: snapshot.listedPullRequests(for: other, scope: scope, repository: repository, at: now),
+                funnel: PullRequestWorkspaceStatusFilter.funnelMembers(for: other, in: snapshot)
+            ).count
         }
         VStack(alignment: .leading, spacing: 10) {
             scopeBar(metrics)
@@ -169,7 +164,6 @@ struct PullRequestList: View {
                         .frame(maxWidth: 128)
                 }
             }
-            funnelFilter
             // The count lives in the field's placeholder and the copy action at its end, so the controls take one
             // row fewer before the first PR.
             HStack(spacing: 6) {
@@ -203,7 +197,7 @@ struct PullRequestList: View {
             }
             if pullRequests.isEmpty {
                 Text(search.isActive ? "No matching PRs in this list. Try another search, change the filters, or clear the search."
-                     : statusChoice != nil ? "No PRs with that status in this list. Choose another status or show all statuses." : emptyText)
+                     : statusChoice != nil && funnel == nil ? "No PRs with that status in this list. Choose another status or show all statuses." : emptyText)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 60)
@@ -295,22 +289,6 @@ struct PullRequestList: View {
         .accessibilityValue(target?.title ?? "")
     }
 
-    /// A merge-funnel part has no picker of its own, so it shows as a chip whose × removes it. A repository needs no
-    /// chip: the repository picker already names it and its "All repositories" choice removes it, so a second control
-    /// would only push the first PR a row further down.
-    @ViewBuilder private var funnelFilter: some View {
-        switch funnel {
-        case .notMerged:
-            FilterChip(title: "Not merged", help: "Show merged PRs too") { funnel = nil }
-        case .carriedIn:
-            FilterChip(title: "Opened before \(snapshot.window.monthTitle)", help: "Show PRs opened this month too") {
-                funnel = nil
-            }
-        case nil:
-            EmptyView()
-        }
-    }
-
     private var emptyText: String {
         let prs = repository.map { "\($0) PRs" } ?? "PRs"
         if funnel == .notMerged {
@@ -380,30 +358,5 @@ struct PullRequestList: View {
             PullRequestWorkspaceCopyLinkButton(pullRequest: pr, pasteboard: copyLinkPasteboard)
                 .frame(width: 24, height: 24)
         }
-    }
-}
-
-/// A filter on the list, removed by clicking it.
-private struct FilterChip: View {
-    let title: String
-    let help: String
-    let remove: () -> Void
-
-    var body: some View {
-        Button(action: remove) {
-            HStack(spacing: 4) {
-                Text(title).lineLimit(1).truncationMode(.middle)
-                Image(systemName: "xmark").font(.caption2.weight(.semibold))
-            }
-            .font(.caption)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(Capsule().fill(.quaternary))
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .help(help)
-        .accessibilityLabel("\(title) filter")
-        .accessibilityHint(help)
     }
 }

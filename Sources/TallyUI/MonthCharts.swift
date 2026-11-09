@@ -38,8 +38,10 @@ struct MonthCharts: View {
                     LegendKey(label: "Steady pace", color: Self.neutral, dashed: true)
                 }
                 if let projection {
-                    Text("Likely finish: \(projection.low.formatted())–\(projection.high.formatted())")
+                    let outlook = MonthInsightOutlookText(projection: projection, goal: goal)
+                    Text(outlook.line)
                         .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                        .help(outlook.help)
                 }
                 runningTotal.frame(height: 96)
             }
@@ -104,7 +106,7 @@ struct MonthCharts: View {
         .daySelection($hoveredDay, dayCount: dayCount, select: select)
         .accessibilityLabel(
             "Running total of \(cumulative.last ?? 0) against a steady pace to \(goal)"
-                + (projection.map { ". Likely finish \($0.low) to \($0.high)" } ?? "")
+                + (projection.map { ". \(MonthInsightOutlookText(projection: $0, goal: goal).spoken)" } ?? "")
         )
     }
 

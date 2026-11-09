@@ -22,6 +22,17 @@ The popover always reopens on the numbers, even if you closed it on the list or 
 
 You also get a notification when a refresh takes you past your goal. macOS asks for permission the first time, and you can turn it off in Settings. A goal already met the first time the app sees that month's numbers doesn't notify. Each target (month, metric, and goal value) is announced at most once, so a raised goal or the other metric can notify when a later refresh crosses it.
 
+## Zooming in
+
+When the PR list opens on part of the month (a day from the charts or the goal-hit shortcut, a repo from the top repos, a part of the merge funnel, or the figure your goal doesn't count), a heading above the list names that slice and says what it amounts to:
+
+- For a day: how many PRs it had against an average day so far this month ("4 opened · 2× an average day"). The ‹ and › beside the date step to the day before or after, up to today
+- Otherwise: its share of the month ("18 of 45 opened this month · 40%")
+- How many of its PRs merged and the median time from opening to merging, plus how many are still open, drafts, or closed without merging
+- Which repos the PRs are in, unless you zoomed to one
+
+Open, draft and closed are only counted for PRs whose state GitHub reported. The heading describes the slice you opened; filters you change inside the list don't change it.
+
 ## Install
 
 Requires macOS 14+, Xcode (or, before macOS 27, the Command Line Tools), and the [GitHub CLI](https://cli.github.com) logged in (`gh auth login`).

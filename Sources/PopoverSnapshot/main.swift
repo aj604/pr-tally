@@ -1,9 +1,9 @@
 import AppKit
 import SwiftUI
 import TallyCore
-import TallyUI
+@_spi(Fixtures) import TallyUI
 
-// Usage: swift run PopoverSnapshot <output.png> [light|dark|menubar|rollover|drilldown|overview|milestone]
+// Usage: swift run PopoverSnapshot <output.png> [light|dark|menubar|rollover|drilldown|overview|zoom-day|zoom-repo|milestone]
 @MainActor
 func write(_ view: some View, to path: String) throws {
     let renderer = ImageRenderer(content: view)
@@ -118,8 +118,9 @@ func renderRollover(to path: String) async throws {
 }
 
 /// A busy day in a few repositories, with the pull request list open (or, for `overview`, closed), using no network.
+/// `focusDay` (zero-based) or `focusRepository` opens the list zoomed to it, as from the charts or the top repos.
 @MainActor
-func renderFixture(to path: String, listOpen: Bool) async throws {
+func renderFixture(to path: String, listOpen: Bool, focusDay: Int? = nil, focusRepository: String? = nil) async throws {
     let now = Date()
     let window = MonthWindow(containing: now)
     let startOfToday = window.calendar.startOfDay(for: now)
@@ -128,28 +129,33 @@ func renderFixture(to path: String, listOpen: Bool) async throws {
         ("acme/infra", "Retry failed uploads with exponential backoff and a jitter that depends on the attempt"),
         ("acme/infra", "Add dashboards for queue depth"), ("me/dotfiles", "Tidy zsh startup"),
     ]
+    // Most older PRs merged a few hours to a day and a half after opening; the rest are open, draft or closed.
     let earlier = (0..<40).map { index -> PullRequest in
         let (repo, title) = titles[index % titles.count]
+        let createdAt = max(window.start, startOfToday.addingTimeInterval(-TimeInterval(index + 1) * 20_000))
+        let mergedAt = index % 4 == 3 ? nil : min(now, createdAt.addingTimeInterval(TimeInterval(index % 9 + 1) * 14_000))
+        let state: PullRequest.State = mergedAt != nil ? .merged : index % 8 == 3 ? .open : .closed
         return PullRequest(
             id: "old\(index)", title: title, url: URL(string: "https://github.com/\(repo)/pull/\(index)")!,
-            createdAt: max(window.start, startOfToday.addingTimeInterval(-TimeInterval(index + 1) * 20_000)),
-            mergedAt: nil, repository: .init(nameWithOwner: repo)
+            createdAt: createdAt, mergedAt: mergedAt, repository: .init(nameWithOwner: repo), state: state,
+            isDraft: index == 3
         )
     }
     let today = titles.enumerated().map { index, entry in
         PullRequest(
             id: "today\(index)", title: entry.1, url: URL(string: "https://github.com/\(entry.0)/pull/\(900 + index)")!,
             createdAt: max(startOfToday, now.addingTimeInterval(-TimeInterval(index) * 3_100 - 60)), mergedAt: nil,
-            repository: .init(nameWithOwner: entry.0)
+            repository: .init(nameWithOwner: entry.0), state: .open, isDraft: index == 4
         )
     }
     let snapshot = MonthSnapshot(
-        login: "me", window: window, opened: earlier + today, merged: [], totalContributions: 612, fetchedAt: now
+        login: "me", window: window, opened: earlier + today, merged: (earlier + today).filter { $0.mergedAt != nil },
+        totalContributions: 612, fetchedAt: now
     )
     let store = TallyStore(defaults: ScratchDefaults(), cache: nil) { snapshot }
     await store.refresh()
     if listOpen { store.screen = .pullRequests }
-    let view = PopoverView(store: store)
+    let view = PopoverView(store: store, focusDay: focusDay, focusRepository: focusRepository)
         .background(Color(nsColor: .windowBackgroundColor))
     try writeHosted(view, to: path)
 }
@@ -211,10 +217,16 @@ if mode == "milestone" {
     try await renderRollover(to: path)
 } else if mode == "drilldown" || mode == "overview" {
     try await renderFixture(to: path, listOpen: mode == "drilldown")
+} else if mode == "zoom-day" {
+    // Yesterday, or the 1st early in the month, as if picked from the per-day chart.
+    let today = MonthWindow(containing: Date()).dayIndex(of: Date()) ?? 0
+    try await renderFixture(to: path, listOpen: true, focusDay: max(0, today - 1))
+} else if mode == "zoom-repo" {
+    try await renderFixture(to: path, listOpen: true, focusRepository: "acme/infra")
 } else if mode == "light" || mode == "dark" {
     try await renderPopover(to: path, scheme: mode == "dark" ? .dark : .light)
 } else {
     // Only `light` and `dark` use your real login, so a mistyped fixture mode must not fall through to them.
-    FileHandle.standardError.write(Data("Unknown mode \(mode). Use light, dark, menubar, rollover, drilldown, overview or milestone.\n".utf8))
+    FileHandle.standardError.write(Data("Unknown mode \(mode). Use light, dark, menubar, rollover, drilldown, overview, zoom-day, zoom-repo or milestone.\n".utf8))
     exit(2)
 }

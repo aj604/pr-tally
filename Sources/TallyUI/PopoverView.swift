@@ -10,13 +10,24 @@ public struct PopoverView: View {
         self.store = store
     }
 
+    /// Opens on the pull request list zoomed to a zero-based day or a repository, so fixtures can render a zoom.
+    @_spi(Fixtures) public init(store: TallyStore, focusDay day: Int? = nil, focusRepository repository: String? = nil) {
+        self.store = store
+        _listFocus = State(initialValue: PullRequestFocus(day: day, repository: repository))
+    }
+
     public var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
             if store.screen == .settings {
                 SettingsView(store: store)
             } else if store.screen == .pullRequests, let snapshot = store.currentSnapshot() {
+                FocusInsightSummary(snapshot: snapshot, metric: store.metric, focus: listFocus, now: Date()) { focus in
+                    listFocus = focus
+                }
+                // The list keeps its own filters, so stepping to another day starts it afresh on that day.
                 PullRequestList(snapshot: snapshot, metric: store.metric, now: Date(), focus: listFocus)
+                    .id(listFocus.day)
             } else if let snapshot = store.currentSnapshot(), let pace = store.pace() {
                 progress(pace, today: snapshot.todayCount(for: store.metric, at: Date()), snapshot: snapshot)
                 stats(snapshot: snapshot, pace: pace)

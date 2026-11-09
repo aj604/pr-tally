@@ -1,27 +1,19 @@
 import SwiftUI
 import TallyCore
 
-/// Above the pull request list when it opened on a slice of the month: names the slice, says what it amounts to
-/// beside the month, and for a day steps to the day before or after without going back to the charts.
+/// Above the pull request list when it opened on a slice of the month: names the slice and says what it amounts to
+/// beside the month.
 struct FocusInsightSummary: View {
     let snapshot: MonthSnapshot
     /// The metric the goal counts; the focus can ask for the other.
     let metric: PRMetric
     let focus: PullRequestFocus
     let now: Date
-    var step: (PullRequestFocus) -> Void = { _ in }
 
     var body: some View {
         if let text = FocusInsightText(snapshot: snapshot, metric: metric, focus: focus, now: now) {
             VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(text.title).font(.callout.weight(.semibold)).lineLimit(1).truncationMode(.middle)
-                    Spacer(minLength: 4)
-                    if focus.day != nil {
-                        stepButton("chevron.left", to: text.previousDay, help: "Show the day before")
-                        stepButton("chevron.right", to: text.nextDay, help: "Show the day after")
-                    }
-                }
+                Text(text.title).font(.callout.weight(.semibold)).lineLimit(1).truncationMode(.middle)
                 ForEach(text.lines, id: \.self) { Text($0) }
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -31,20 +23,6 @@ struct FocusInsightSummary: View {
             .help(text.help)
         }
     }
-
-    private func stepButton(_ symbol: String, to day: Int?, help: String) -> some View {
-        Button {
-            var next = focus
-            next.day = day
-            step(next)
-        } label: {
-            Image(systemName: symbol).font(.caption.weight(.semibold)).frame(width: 18, height: 18).contentShape(Rectangle())
-        }
-        .buttonStyle(.borderless)
-        .disabled(day == nil)
-        .help(help)
-        .accessibilityLabel(help)
-    }
 }
 
 /// The words for a slice: a title saying where the list is zoomed to, then what the slice amounts to, how its PRs
@@ -53,9 +31,6 @@ struct FocusInsightText: Equatable {
     let title: String
     let lines: [String]
     let help: String
-    /// The neighbouring days a day's slice steps to, nil at the month's first day or at today.
-    let previousDay: Int?
-    let nextDay: Int?
 
     init?(snapshot: MonthSnapshot, metric goal: PRMetric, focus: PullRequestFocus, now: Date) {
         guard focus.day != nil || focus.repository != nil || focus.metric != nil || focus.funnel != nil else { return nil }
@@ -118,14 +93,6 @@ struct FocusInsightText: Equatable {
 
         help = "Compared with every PR \(verb) this month. Merge times run from opening to merging; "
             + "open, draft and closed count only PRs whose state GitHub reported."
-        if let day = focus.day {
-            let last = today ?? (now >= window.end ? window.dayCount - 1 : 0)
-            previousDay = day > 0 ? day - 1 : nil
-            nextDay = day < last ? day + 1 : nil
-        } else {
-            previousDay = nil
-            nextDay = nil
-        }
     }
 
     /// A zero-based day with its weekday, in the zone the month was counted in, since "Tue" says more than "Nov 3".

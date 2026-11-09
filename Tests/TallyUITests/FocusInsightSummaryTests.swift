@@ -62,24 +62,14 @@ private func text(_ focus: PullRequestFocus, metric: PRMetric = .opened) -> Focu
         #expect(try #require(text(PullRequestFocus(day: 0))).lines == ["None opened · an average day has 2"])
     }
 
-    @Test func todayIsTitledTodayAndHasNoDayAfter() throws {
-        let text = try #require(text(PullRequestFocus(day: 9)))
-        #expect(text.title == "Today")
-        #expect(text.previousDay == 8)
-        #expect(text.nextDay == nil)
-    }
-
-    @Test func theFirstHasNoDayBefore() throws {
-        let text = try #require(text(PullRequestFocus(day: 0)))
-        #expect(text.previousDay == nil)
-        #expect(text.nextDay == 1)
+    @Test func todayIsTitledToday() throws {
+        #expect(try #require(text(PullRequestFocus(day: 9))).title == "Today")
     }
 
     @Test func aRepositoryShowsItsShareOfTheMonthAndNoRepositoryLine() throws {
         let text = try #require(text(PullRequestFocus(repository: "acme/infra")))
         #expect(text.title == "acme/infra")
         #expect(text.lines == ["17 of 20 opened this month · 85%", "1 merged in a median 2.1 days · 16 open"])
-        #expect(text.previousDay == nil && text.nextDay == nil)
     }
 
     @Test func theOtherMetricIsTheWholeMonthWithItsMergeTime() throws {

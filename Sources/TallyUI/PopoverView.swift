@@ -22,12 +22,8 @@ public struct PopoverView: View {
             if store.screen == .settings {
                 SettingsView(store: store)
             } else if store.screen == .pullRequests, let snapshot = store.currentSnapshot() {
-                FocusInsightSummary(snapshot: snapshot, metric: store.metric, focus: listFocus, now: Date()) { focus in
-                    listFocus = focus
-                }
-                // The list keeps its own filters, so stepping to another day starts it afresh on that day.
+                FocusInsightSummary(snapshot: snapshot, metric: store.metric, focus: listFocus, now: Date())
                 PullRequestList(snapshot: snapshot, metric: store.metric, now: Date(), focus: listFocus)
-                    .id(listFocus.day)
             } else if let snapshot = store.currentSnapshot(), let pace = store.pace() {
                 progress(pace, today: snapshot.todayCount(for: store.metric, at: Date()), snapshot: snapshot)
                 stats(snapshot: snapshot, pace: pace)

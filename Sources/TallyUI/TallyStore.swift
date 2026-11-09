@@ -96,6 +96,10 @@ public final class TallyStore {
     private var stalledAt: Date?
     /// When the refreshes since the last good one started failing or waiting for the network.
     private var stalledSince: Date?
+    /// Refreshes that have failed in a row, and the latest failure, which together set how long the schedule
+    /// waits. See `TallyStoreRetry`. Waiting for the network is neither, since its return triggers a refresh.
+    private var failedRefreshes = 0
+    private var lastFailure: Error?
     /// Read for the time of a failed or waiting refresh, so tests can let minutes of retries pass.
     @ObservationIgnored var clock: () -> Date = Date.init
     /// How long the schedule waits to retry a failure, shortened in tests.
@@ -301,10 +305,14 @@ public final class TallyStore {
             errorMessage = nil
             stalledAt = nil
             stalledSince = nil
+            failedRefreshes = 0
+            lastFailure = nil
             cache?.save(fetched)
             announceGoal(from: previous, to: fetched)
         } catch {
             errorMessage = error.localizedDescription
+            failedRefreshes += 1
+            lastFailure = error
             stalled()
         }
         isRefreshing = false
@@ -366,6 +374,7 @@ public final class TallyStore {
     private func waitForNetwork() {
         missedRefresh = true
         errorMessage = Self.offlineMessage
+        lastFailure = nil
         stalled()
     }
 
@@ -456,14 +465,22 @@ public final class TallyStore {
         }
     }
 
+    /// A normal interval after success. After a failure, soon at first, since the network is often just coming
+    /// back, then less often while it lasts; see `TallyStoreRetry`.
+    func nextDelay() -> Duration {
+        let interval = Duration.seconds(refreshMinutes * 60)
+        guard errorMessage != nil else { return interval }
+        return TallyStoreRetry.delay(
+            afterFailures: failedRefreshes, error: lastFailure, base: retryDelay, interval: interval, now: clock())
+    }
+
     private func startSchedule() {
         schedule?.cancel()
         schedule = Task { [weak self] in
             while !Task.isCancelled, let self {
                 await self.refreshIfStale()
                 await self.refreshSettled()
-                // Retry failures soon; the network is often just coming back.
-                let delay: Duration = self.errorMessage == nil ? .seconds(self.refreshMinutes * 60) : self.retryDelay
+                let delay = self.nextDelay()
                 try? await Task.sleep(for: delay, clock: .suspending)
             }
         }

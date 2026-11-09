@@ -1,11 +1,16 @@
 import TallyCore
 
-/// The line under the stats grid that sets the needed daily count against the recent one.
+/// The line under the stats grid that sets the needed daily count against the recent one, and, when the chart's
+/// whole-month outlook points the other way, a second line saying so.
 struct MonthInsightPaceGapText: Equatable {
     let line: String
     let help: String
+    /// Names the disagreement between the chart's likely finish and the recent days. It states only what the two
+    /// verdicts already are (the month so far reaches or falls short; the recent days would or wouldn't), so it
+    /// can't contradict the numbers beside it.
+    let note: String?
 
-    init(gap: MonthInsightPaceGap) {
+    init(gap: MonthInsightPaceGap, momentum: MonthInsightMomentum? = nil) {
         let rate = Self.perDay(gap.recent)
         let needed = Self.perDay(gap.needed)
         let recent = "Recent pace \(rate) a day"
@@ -16,6 +21,15 @@ struct MonthInsightPaceGapText: Equatable {
             // No multiple when nothing was counted recently: "needs infinitely more" says nothing.
             let multiple = gap.multiple.map { " · needs \(Self.times($0)) that" } ?? ""
             line = "\(recent)\(multiple)"
+        }
+        let recentDays = "the last \(gap.days) full days"
+        switch momentum {
+        case .slowing:
+            note = "The month so far reaches the goal, but \(recentDays) wouldn't."
+        case .catchingUp:
+            note = "The month so far falls short of the goal, but \(recentDays) would reach it."
+        case nil:
+            note = nil
         }
         help = "The goal needs \(needed) a day from the start of today. The last \(gap.days) completed days "
             + "averaged \(rate) a day; today is left out so a quiet morning doesn't look like a slowdown."

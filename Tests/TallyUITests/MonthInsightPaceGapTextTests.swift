@@ -86,3 +86,42 @@ private func text(goal: Int, perDay: Int) -> MonthInsightPaceGapText {
         #expect(text(goal: 114, perDay: 3).line == "Recent pace 3.0 a day · needs 1.4× that")
     }
 }
+
+@Suite struct MonthInsightPaceGapNoteTests {
+    private func gap() -> MonthInsightPaceGap {
+        let window = MonthWindow(containing: date(1), calendar: calendar)
+        let now = date(11, hour: 12)
+        let opened = (1...10).flatMap { day in
+            (0..<4).map { index in
+                PullRequest(
+                    id: "\(day)-\(index)", title: "A change", url: URL(string: "https://github.com/me/app/pull/1")!,
+                    createdAt: date(day, hour: 12), mergedAt: nil, repository: .init(nameWithOwner: "me/app")
+                )
+            }
+        }
+        let snapshot = MonthSnapshot(login: "me", window: window, opened: opened, merged: [], totalContributions: 0, fetchedAt: now)
+        let pace = Pace(goal: 1000, count: 40, window: window, at: now)
+        return MonthInsightPaceGap(
+            pace: pace, today: 0, activity: MonthInsightActivity(snapshot: snapshot, metric: .opened, at: now)
+        )!
+    }
+
+    @Test func agreementAddsNoNote() {
+        #expect(MonthInsightPaceGapText(gap: gap()).note == nil)
+        #expect(MonthInsightPaceGapText(gap: gap(), momentum: nil).note == nil)
+    }
+
+    @Test func slowingSaysTheMonthReachesTheGoalButTheRecentDaysWouldNot() {
+        #expect(MonthInsightPaceGapText(gap: gap(), momentum: .slowing).note
+            == "The month so far reaches the goal, but the last 7 full days wouldn't.")
+    }
+
+    @Test func catchingUpSaysTheRecentDaysWouldReachWhatTheMonthFallsShortOf() {
+        #expect(MonthInsightPaceGapText(gap: gap(), momentum: .catchingUp).note
+            == "The month so far falls short of the goal, but the last 7 full days would reach it.")
+    }
+
+    @Test func theNoteLeavesTheLineAlone() {
+        #expect(MonthInsightPaceGapText(gap: gap(), momentum: .slowing).line == MonthInsightPaceGapText(gap: gap()).line)
+    }
+}

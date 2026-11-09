@@ -168,11 +168,22 @@ public struct PopoverView: View {
         let activity = MonthInsightActivity(snapshot: snapshot, metric: store.metric, at: now)
         let today = snapshot.todayCount(for: store.metric, at: now)
         if let gap = MonthInsightPaceGap(pace: pace, today: today, activity: activity) {
-            let text = MonthInsightPaceGapText(gap: gap)
-            Text(text.line)
-                .font(.caption).foregroundStyle(.secondary).monospacedDigit()
-                .fixedSize(horizontal: false, vertical: true)
-                .help(text.help)
+            // The chart's range is the whole month's rate and this line is the recent days', so say when they disagree.
+            let outlook = snapshot.projection(for: store.metric, at: now).flatMap {
+                MonthInsightOutlook(projection: $0, goal: pace.goal)
+            }
+            let momentum = MonthInsightMomentum(outlook: outlook, gap: gap)
+            let text = MonthInsightPaceGapText(gap: gap, momentum: momentum)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(text.line).foregroundStyle(.secondary)
+                if let note = text.note {
+                    Text(note).foregroundStyle(momentum == .slowing ? Color.orange : Color.green)
+                }
+            }
+            .font(.caption).monospacedDigit()
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityElement(children: .combine)
+            .help(text.help)
         }
     }
 

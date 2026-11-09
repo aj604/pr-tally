@@ -29,17 +29,27 @@ private final class Calls: @unchecked Sendable {
     func next() -> Int { lock.withLock { value += 1; return value } }
 }
 
+private final class Gate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isOpen = false
+    func open() { lock.withLock { isOpen = true } }
+    /// Polled rather than resumed, so it can't be missed whichever side gets there first.
+    func wait() async {
+        while !lock.withLock({ isOpen }) { try? await Task.sleep(for: .milliseconds(5)) }
+    }
+}
+
 /// The schedule runs for real with a fixed clock, so the time it reports is exact. It sleeps for the full retry
 /// delay, a minute or a quarter hour, and each test pauses it before returning.
 @MainActor
 @Suite(.serialized) struct TallyStoreRetryTextTests {
     private func store(
-        clock: @escaping () -> Date = { noon }, _ results: @escaping @Sendable (Int) throws -> MonthSnapshot
+        clock: @escaping () -> Date = { noon }, _ results: @escaping @Sendable (Int) async throws -> MonthSnapshot
     ) -> TallyStore {
         let calls = Calls()
         let store = TallyStore(
             defaults: TextDefaults(), network: NetworkStatus { AsyncStream { $0.yield(true) } }
-        ) { try results(calls.next()) }
+        ) { try await results(calls.next()) }
         store.clock = clock
         return store
     }
@@ -102,7 +112,51 @@ private final class Calls: @unchecked Sendable {
         store.automaticRefreshPaused = true
     }
 
-    @Test func waitingForTheNetworkHasNoTime() async throws {
+    /// The schedule is still asleep toward its old time when the connection drops, which is the usual way a fetch
+    /// fails. That time is wrong from then on: nothing is fetched at it, and coming back refreshes at once.
+    @Test func droppingOffTheNetworkTakesTheTimeAwayAtOnce() async throws {
+        let store = store(clock: Date.init) { _ in throw Down() }
+        store.staleGrace = 0
+        store.start(observingSystem: false)
+        try await asleep(store)
+        #expect(store.retryText(at: Date()) != nil)
+        #expect(store.menuBarAccessibilityLabel.contains("Next try"))
+        await store.networkChanged(isOnline: false)
+        #expect(store.nextTryAt != nil, "the loop hasn't woken, so the old failure is still what's on screen")
+        #expect(store.retryText(at: Date()) == nil)
+        #expect(store.updatedText() == nil)
+        #expect(store.menuBarIsStale)
+        #expect(!store.menuBarAccessibilityLabel.contains("Next try"), Comment(rawValue: store.menuBarAccessibilityLabel))
+        store.automaticRefreshPaused = true
+    }
+
+    /// Reconnecting refreshes at once. While that fetch is under way the schedule's sleep is still pending toward
+    /// its time, so the footer may name it again; once the fetch succeeds nothing is left to name.
+    @Test func comingBackOnlineRefreshesAtOnceAndTheTimeFollowsTheOutcome() async throws {
+        let ok = snapshot()
+        let gate = Gate()
+        let store = store { call in
+            if call == 1 { throw Down() }
+            await gate.wait()
+            return ok
+        }
+        store.start(observingSystem: false)
+        try await asleep(store)
+        await store.networkChanged(isOnline: false)
+        #expect(store.updatedText(at: noon) == nil)
+        let reconnect = Task { await store.networkChanged(isOnline: true) }
+        for _ in 0..<500 where !store.isRefreshing { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(store.isRefreshing, "reconnecting fetches at once, without waiting for the schedule")
+        #expect(store.updatedText(at: noon) == "Next try \(time(noon.addingTimeInterval(60)))")
+        gate.open()
+        await reconnect.value
+        #expect(store.retryText(at: noon) == nil)
+        #expect(store.updatedText(at: noon) == "Updated \(time(ok.fetchedAt))")
+        store.automaticRefreshPaused = true
+    }
+
+    /// After the schedule's own wake finds it offline, which clears the failure.
+    @Test func waitingForTheNetworkAfterTheScheduleWakesHasNoTime() async throws {
         let store = store { _ in throw Down() }
         await store.refresh()
         await store.networkChanged(isOnline: false)

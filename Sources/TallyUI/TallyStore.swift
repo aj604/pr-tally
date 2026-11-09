@@ -87,7 +87,7 @@ public final class TallyStore {
     private let notify: (@MainActor (Milestone) -> Void)?
     private let network: NetworkStatus
     /// Assumed until the system says otherwise, so a launch doesn't wait on it.
-    private var isOnline = true
+    private(set) var isOnline = true
     /// Whether a refresh was due while offline, which the network coming back then makes up for.
     private var missedRefresh = false
     /// Counts the network coming back, so a fetch that failed while it did is tried again.

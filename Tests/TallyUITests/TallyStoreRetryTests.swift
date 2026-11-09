@@ -113,6 +113,59 @@ private func delay(_ failures: Int, _ error: Error? = Down(), base: Duration = m
         #expect(store.nextDelay() == .seconds(60))
     }
 
+    @Test func fourFailuresThenOfflinePollsAtTheBaseDelayNotTheBackoff() async {
+        let store = store { _ in throw Down() }
+        for _ in 0..<4 { await store.refresh() }
+        #expect(store.nextDelay() == .seconds(480))
+        await store.networkChanged(isOnline: false)
+        await store.refreshIfStale(now: noon.addingTimeInterval(3600))
+        #expect(store.errorMessage == TallyStore.offlineMessage)
+        #expect(store.nextDelay() == .seconds(60))
+    }
+
+    /// The schedule runs for real here, with a rate limit lasting a second or two and numbers old enough that every
+    /// automatic try fetches. Times are measured from the start, not asserted to the millisecond.
+    @Test func aSuccessFromOutsideTheScheduleEndsItsWaitForARateLimit() async throws {
+        let started = Date()
+        let times = Times()
+        let until = started.addingTimeInterval(1.5)
+        let store = TallyStore(defaults: RetryDefaults(), network: NetworkStatus { AsyncStream { $0.yield(true) } }) {
+            let call = times.record(since: started)
+            if call == 1 { throw GitHubError.rateLimited(until: until) }
+            return MonthSnapshot(
+                login: "me", window: MonthWindow(containing: Date()), opened: [], merged: [], totalContributions: 0,
+                fetchedAt: Date().addingTimeInterval(-600)
+            )
+        }
+        store.retryDelay = .milliseconds(20)
+        store.start(observingSystem: false)
+        for _ in 0..<200 where times.count < 1 { try await Task.sleep(for: .milliseconds(10)) }
+        // What saving a new token does: succeeds while the schedule is waiting for the limit to lift.
+        await store.refresh()
+        #expect(times.count == 2)
+        try await Task.sleep(for: .milliseconds(300))
+        // The schedule started over from that success, so it looked again at once rather than at the old deadline.
+        #expect(times.count == 3)
+        #expect(times.values.last.map { $0 < 1.0 } == true)
+        store.automaticRefreshPaused = true
+    }
+
+    @Test func theMenuBarFadesAfterTheGracePeriodEvenWhenTheRetryIsFarOff() async throws {
+        let until = Date().addingTimeInterval(30)
+        let store = TallyStore(defaults: RetryDefaults(), network: NetworkStatus { AsyncStream { $0.yield(true) } }) {
+            throw GitHubError.rateLimited(until: until)
+        }
+        store.staleGrace = 0.3
+        store.start(observingSystem: false)
+        for _ in 0..<200 where store.errorMessage == nil { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(!store.menuBarIsStale)
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(!store.menuBarIsStale)
+        for _ in 0..<100 where !store.menuBarIsStale { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(store.menuBarIsStale, "faded at the grace period, not when the 30 second limit ends")
+        store.automaticRefreshPaused = true
+    }
+
     @Test func changingTheIntervalShortensTheBackoffCeiling() async {
         let store = store { _ in throw Down() }
         store.refreshMinutes = 2
@@ -125,4 +178,12 @@ private final class Counter: @unchecked Sendable {
     private let lock = NSLock()
     private var value = 0
     func next() -> Int { lock.withLock { value += 1; return value } }
+}
+
+private final class Times: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [TimeInterval] = []
+    var values: [TimeInterval] { lock.withLock { recorded } }
+    var count: Int { values.count }
+    func record(since start: Date) -> Int { lock.withLock { recorded.append(Date().timeIntervalSince(start)); return recorded.count } }
 }

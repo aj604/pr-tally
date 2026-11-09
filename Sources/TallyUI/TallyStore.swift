@@ -100,6 +100,10 @@ public final class TallyStore {
     /// waits. See `TallyStoreRetry`. Waiting for the network is neither, since its return triggers a refresh.
     private var failedRefreshes = 0
     private var lastFailure: Error?
+    /// Whether the schedule is asleep waiting out a failure, which a success from anywhere else makes pointless.
+    @ObservationIgnored private var sleepingOnFailure = false
+    /// How long failures must last before the menu bar fades, shortened in tests.
+    @ObservationIgnored var staleGrace: TimeInterval = 120
     /// Read for the time of a failed or waiting refresh, so tests can let minutes of retries pass.
     @ObservationIgnored var clock: () -> Date = Date.init
     /// How long the schedule waits to retry a failure, shortened in tests.
@@ -260,9 +264,9 @@ public final class TallyStore {
     /// With no numbers for this month, the "–" fades the same way, so a first launch that can't sign in, or a new
     /// month that can't be fetched, doesn't look like loading for good.
     public var menuBarIsStale: Bool {
-        guard let stalledAt, let stalledSince, stalledAt.timeIntervalSince(stalledSince) >= 120 else { return false }
+        guard let stalledAt, let stalledSince, stalledAt.timeIntervalSince(stalledSince) >= staleGrace else { return false }
         guard let fetchedAt = currentSnapshot()?.fetchedAt else { return true }
-        return stalledAt.timeIntervalSince(fetchedAt) >= Double(refreshMinutes * 60 + 120)
+        return stalledAt.timeIntervalSince(fetchedAt) >= Double(refreshMinutes * 60) + staleGrace
     }
 
     /// What VoiceOver reads for the menu bar item, since the image carries the numbers visually.
@@ -307,6 +311,9 @@ public final class TallyStore {
             stalledSince = nil
             failedRefreshes = 0
             lastFailure = nil
+            // The wait was for a failure that is over, such as a rate limit lifted by a new token. Without this the
+            // next automatic refresh could be an hour away.
+            if sleepingOnFailure, schedule != nil { startSchedule() }
             cache?.save(fetched)
             announceGoal(from: previous, to: fetched)
         } catch {
@@ -374,6 +381,8 @@ public final class TallyStore {
     private func waitForNetwork() {
         missedRefresh = true
         errorMessage = Self.offlineMessage
+        // Reconnecting refreshes at once, so offline polling stays at the base delay however long the last failures ran.
+        failedRefreshes = 0
         lastFailure = nil
         stalled()
     }
@@ -476,13 +485,36 @@ public final class TallyStore {
 
     private func startSchedule() {
         schedule?.cancel()
+        sleepingOnFailure = false
         schedule = Task { [weak self] in
             while !Task.isCancelled, let self {
                 await self.refreshIfStale()
                 await self.refreshSettled()
-                let delay = self.nextDelay()
-                try? await Task.sleep(for: delay, clock: .suspending)
+                await self.sleepUntilNextTry()
             }
         }
+    }
+
+    private func sleepUntilNextTry() async {
+        let delay = nextDelay()
+        guard errorMessage != nil else { return await sleep(delay) }
+        sleepingOnFailure = true
+        defer { if !Task.isCancelled { sleepingOnFailure = false } }
+        // A long wait, such as a rate limit's, would otherwise leave the menu bar unfaded until it ended: it fades
+        // only when a failure is recorded after the grace period. So the wait is split to record one then.
+        if let stalledSince {
+            let untilStale = Duration.seconds(max(0, stalledSince.addingTimeInterval(staleGrace).timeIntervalSince(clock())))
+            if untilStale > .zero, untilStale < delay {
+                await sleep(untilStale)
+                guard !Task.isCancelled else { return }
+                stalled()
+                return await sleep(delay - untilStale)
+            }
+        }
+        await sleep(delay)
+    }
+
+    private func sleep(_ duration: Duration) async {
+        try? await Task.sleep(for: duration, clock: .suspending)
     }
 }

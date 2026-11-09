@@ -106,7 +106,7 @@ struct MonthCharts: View {
         .daySelection($hoveredDay, dayCount: dayCount, select: select)
         .accessibilityLabel(
             "Running total of \(cumulative.last ?? 0) against a steady pace to \(goal)"
-                + (projection.map { ". Likely finish \($0.low) to \($0.high)" } ?? "")
+                + (projection.map { ". \(MonthInsightOutlookText(projection: $0, goal: goal).spoken)" } ?? "")
         )
     }
 

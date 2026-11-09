@@ -20,6 +20,7 @@ public struct PopoverView: View {
             } else if let snapshot = store.currentSnapshot(), let pace = store.pace() {
                 progress(pace, today: snapshot.todayCount(for: store.metric, at: Date()), snapshot: snapshot)
                 stats(snapshot: snapshot, pace: pace)
+                paceGap(snapshot: snapshot, pace: pace)
                 pullRequestsButton(snapshot)
                 Divider()
                 MonthCharts(snapshot: snapshot, metric: store.metric, goal: store.goal, now: Date()) { day in
@@ -158,6 +159,20 @@ public struct PopoverView: View {
                 Stat(title: "Days left", value: pace.daysRemaining.formatted())
                 Stat(title: "Contributions", value: snapshot.totalContributions.formatted())
             }
+        }
+    }
+
+    /// "Needed / day" next to what the last full days averaged, since 41.7 means little beside a 5.7 a day habit.
+    @ViewBuilder private func paceGap(snapshot: MonthSnapshot, pace: Pace) -> some View {
+        let now = Date()
+        let activity = MonthInsightActivity(snapshot: snapshot, metric: store.metric, at: now)
+        let today = snapshot.todayCount(for: store.metric, at: now)
+        if let gap = MonthInsightPaceGap(pace: pace, today: today, activity: activity) {
+            let text = MonthInsightPaceGapText(gap: gap)
+            Text(text.line)
+                .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                .fixedSize(horizontal: false, vertical: true)
+                .help(text.help)
         }
     }
 

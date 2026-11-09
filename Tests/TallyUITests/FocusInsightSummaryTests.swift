@@ -139,6 +139,22 @@ private func text(_ focus: PullRequestFocus, metric: PRMetric = .opened) -> Focu
         #expect(month.lines.contains("3 merged in a median 6h · 16 open · 1 closed"))
     }
 
+    @Test func mergeTimesThatRoundTheSameReadAsAboutTheMonths() throws {
+        // 2.6h beside 3.4h is under the band, but both print as 3h, so "faster than the month's 3h" would contradict itself.
+        func line(slice: Double, month: [Double]) throws -> String? {
+            let opened = [pr("s", day: 3, repo: "x/x", mergedAfter: slice, state: .merged)]
+                + month.enumerated().map { pr("m\($0.offset)", day: 4, mergedAfter: $0.element, state: .merged) }
+            let snapshot = MonthSnapshot(
+                login: "me", window: MonthWindow(containing: now, calendar: calendar), opened: opened,
+                merged: opened, totalContributions: 0, fetchedAt: now
+            )
+            let text = try #require(FocusInsightText(snapshot: snapshot, metric: .opened, focus: PullRequestFocus(repository: "x/x"), now: now))
+            return text.lines.first { $0.contains("merged in") }
+        }
+        #expect(try line(slice: 2.6, month: [3.4, 5]) == "1 merged in a median 3h · about the month's 3h")
+        #expect(try line(slice: 3.4, month: [2.6, 1]) == "1 merged in a median 3h · about the month's 3h")
+    }
+
     @Test func aSliceWithoutSizesSaysNothingAboutSize() throws {
         #expect(try #require(text(PullRequestFocus(repository: "acme/infra"))).lines.allSatisfy { !$0.contains("lines") })
     }

@@ -114,7 +114,9 @@ struct FocusInsightText: Equatable {
             if insight.count < insight.monthCount, let month = snapshot.medianTimeToMerge(for: metric), month > 0 {
                 let ratio = median / month
                 let monthTime = Self.duration(month)
-                lines.append("\(merged) · " + ((0.9...1.1).contains(ratio) ? "about the month's \(monthTime)"
+                // Times that read the same once rounded are about the same, whatever their ratio.
+                let same = (0.9...1.1).contains(ratio) || Self.duration(median) == monthTime
+                lines.append("\(merged) · " + (same ? "about the month's \(monthTime)"
                     : ratio < 1 ? "faster than the month's \(monthTime)"
                     : "\(ratio.formatted(.number.precision(.fractionLength(0...1))))× the month's \(monthTime)"))
             } else {

@@ -51,10 +51,37 @@ public struct FocusInsight: Sendable, Equatable {
 }
 
 extension MonthSnapshot {
-    /// The metric's count per day over the days the month has had so far, today included, or nil before the month.
-    public func averagePerDay(for metric: PRMetric, at now: Date) -> Double? {
-        let days = cumulativeCounts(for: metric, through: now).count
-        return days > 0 ? Double(count(for: metric)) / Double(days) : nil
+    /// The metric's count per finished day: the days before today, or every day once the month is over. Nil until a
+    /// day has finished. Today is left out, since a day still under way would pull the average down.
+    public func averagePerFinishedDay(for metric: PRMetric, at now: Date) -> Double? {
+        let days = finishedDays(at: now)
+        guard days > 0 else { return nil }
+        return Double(dailyCounts(for: metric).prefix(days).reduce(0, +)) / Double(days)
+    }
+
+    /// What a finished day had counted by the time of day `now` is at, on average, so a day still under way is measured
+    /// against the same hours of the others rather than their whole. Nil outside the month and on its first day, when no
+    /// day has finished. The time is read off the clock in the zone the month was counted in, so a day that changes the
+    /// clocks lines up with the rest.
+    public func averageByTimeOfDay(for metric: PRMetric, at now: Date) -> Double? {
+        guard let today = window.dayIndex(of: now), today > 0 else { return nil }
+        let time = clockTime(of: now)
+        let counted = pullRequests(for: metric).filter { pr in
+            guard let date = metric == .opened ? pr.createdAt : pr.mergedAt,
+                  let day = window.dayIndex(of: date), day < today else { return false }
+            return clockTime(of: date) < time
+        }
+        return Double(counted.count) / Double(today)
+    }
+
+    /// Seconds past midnight on the clock, so 9 AM is the same time of day whether or not the clocks changed that night.
+    private func clockTime(of date: Date) -> Int {
+        let clock = window.calendar.dateComponents([.hour, .minute, .second], from: date)
+        return clock.hour! * 3_600 + clock.minute! * 60 + clock.second!
+    }
+
+    private func finishedDays(at now: Date) -> Int {
+        now >= window.end ? window.dayCount : window.dayIndex(of: now) ?? 0
     }
 
     /// The middle size, in lines added plus deleted, of the PRs the metric counted this month, or nil when no PR's

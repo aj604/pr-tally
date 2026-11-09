@@ -25,7 +25,7 @@ private func pr(
     )
 }
 
-/// Twenty PRs over ten days, two a day on average: four on the 3rd, three of them merged.
+/// Twenty PRs over the nine days before today's 10th, 2.2 a day on average: four on the 3rd, three of them merged.
 private let snapshot: MonthSnapshot = {
     let busy = [
         pr("a", day: 3, mergedAfter: 2, state: .merged), pr("b", day: 3, mergedAfter: 6, state: .merged),
@@ -52,7 +52,7 @@ private func text(_ focus: PullRequestFocus, metric: PRMetric = .opened) -> Focu
         let text = try #require(text(PullRequestFocus(day: 2)))
         #expect(text.title == "Tue, Nov 3")
         #expect(text.lines == [
-            "4 opened · 2× an average day",
+            "4 opened · 1.8× an average day's 2.2",
             "3 merged in a median 6h · about the month's 6h",
             "1 closed",
             "2 repos, most in me/app (3)",
@@ -60,11 +60,43 @@ private func text(_ focus: PullRequestFocus, metric: PRMetric = .opened) -> Focu
     }
 
     @Test func aQuietDaySaysWhatAnAverageDayHas() throws {
-        #expect(try #require(text(PullRequestFocus(day: 0))).lines == ["None opened · an average day has 2"])
+        #expect(try #require(text(PullRequestFocus(day: 0))).lines == ["None opened · an average day has 2.2"])
     }
 
     @Test func todayIsTitledToday() throws {
         #expect(try #require(text(PullRequestFocus(day: 9))).title == "Today")
+    }
+
+    @Test func todayIsHeldToWhatAnAverageDayHadByNow() throws {
+        func opened(_ id: String, day: Int, hour: Int) -> PullRequest {
+            PullRequest(
+                id: id, title: "Fixture", url: URL(string: "https://example.test/\(id)")!, createdAt: date(day, hour: hour),
+                mergedAt: nil, repository: .init(nameWithOwner: "me/app")
+            )
+        }
+        // Four finished days, 3.5 PRs a day but one by 9 AM; today has the one it opened at 8.
+        let finished = [1, 3, 4].flatMap { day in [8, 14, 18, 22].map { opened("\(day)-\($0)", day: day, hour: $0) } }
+        let prs = finished + [opened("2-8", day: 2, hour: 8), opened("2-14", day: 2, hour: 14), opened("t", day: 5, hour: 8)]
+        let morning = date(5, hour: 9)
+        let snapshot = MonthSnapshot(
+            login: "me", window: MonthWindow(containing: morning, calendar: calendar), opened: prs, merged: [],
+            totalContributions: 0, fetchedAt: morning
+        )
+        func line(day: Int) throws -> String? {
+            try #require(FocusInsightText(snapshot: snapshot, metric: .opened, focus: PullRequestFocus(day: day), now: morning)).lines.first
+        }
+        // Not "0.3× an average day": the day isn't over.
+        #expect(try line(day: 4) == "1 opened so far · about an average day's 1 by 9:00\u{202F}AM")
+        // A finished day below the average says so in the words the other lines use.
+        #expect(try line(day: 1) == "2 opened · under an average day's 3.5")
+        #expect(try line(day: 0) == "4 opened · 1.1× an average day's 3.5")
+    }
+
+    @Test func aQuietMorningSaysAnAverageDayHadNoneByNow() throws {
+        // Every PR so far was opened at 9 AM, so at 8 an average day has had none.
+        let early = date(10, hour: 8)
+        let text = try #require(FocusInsightText(snapshot: snapshot, metric: .opened, focus: PullRequestFocus(day: 9), now: early))
+        #expect(text.lines.first == "None opened so far · an average day has none by 8:00\u{202F}AM")
     }
 
     @Test func aRepositoryShowsItsShareOfTheMonthAndNoRepositoryLine() throws {
@@ -93,7 +125,7 @@ private func text(_ focus: PullRequestFocus, metric: PRMetric = .opened) -> Focu
         )
         let text = try #require(FocusInsightText(snapshot: busy, metric: .opened, focus: PullRequestFocus(metric: .merged), now: now))
         #expect(text.title == "Merged today")
-        #expect(text.lines == ["2 merged · 4× an average day", "Merged in a median 2h · faster than the month's 3h", "All in me/app"])
+        #expect(text.lines == ["2 merged so far · 9× an average day's 0.2 by 12:00\u{202F}PM", "Merged in a median 2h · faster than the month's 3h", "All in me/app"])
         #expect(FocusInsightText.otherMetricHelp(snapshot: busy, metric: .opened, now: now) == "List the 2 PRs merged today")
         #expect(FocusInsightText.otherMetricHelp(snapshot: snapshot, metric: .opened, now: now) == "List the 3 PRs merged")
     }
@@ -208,7 +240,7 @@ private func text(_ focus: PullRequestFocus, metric: PRMetric = .opened) -> Focu
 
     @Test func aFoldedHeadingKeepsItsFirstLineAndSaysHowManyMoreItHides() throws {
         let text = try #require(text(PullRequestFocus(day: 2)))
-        #expect(text.shownLines(expanded: false) == ["4 opened · 2× an average day"])
+        #expect(text.shownLines(expanded: false) == ["4 opened · 1.8× an average day's 2.2"])
         #expect(text.disclosure(expanded: false) == "3 more")
         #expect(text.shownLines(expanded: true) == text.lines)
         #expect(text.disclosure(expanded: true) == "Less")
@@ -216,7 +248,7 @@ private func text(_ focus: PullRequestFocus, metric: PRMetric = .opened) -> Focu
 
     @Test func aOneLineHeadingHasNothingToFold() throws {
         let text = try #require(text(PullRequestFocus(day: 0)))
-        #expect(text.shownLines(expanded: false) == ["None opened · an average day has 2"])
+        #expect(text.shownLines(expanded: false) == ["None opened · an average day has 2.2"])
         #expect(text.disclosure(expanded: false) == nil)
         #expect(text.disclosure(expanded: true) == nil)
     }

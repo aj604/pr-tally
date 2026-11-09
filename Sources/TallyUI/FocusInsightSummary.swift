@@ -104,12 +104,21 @@ struct FocusInsightText: Equatable {
         title = titles.joined(separator: " · ")
 
         var lines: [String] = []
-        if day != nil, let average = snapshot.averagePerDay(for: metric, at: now), average > 0 {
-            let ratio = Double(insight.count) / average
-            let size = insight.count == 0 ? "None \(verb)" : "\(insight.count.formatted()) \(verb)"
-            let compared = ratio == 0 ? "an average day has \(average.formatted(.number.precision(.fractionLength(0...1))))"
-                : (0.9...1.1).contains(ratio) ? "about an average day"
-                : "\(ratio.formatted(.number.precision(.fractionLength(0...1))))× an average day"
+        // Today is still under way, so it's held to what the finished days had by this time rather than their whole.
+        let underWay = day != nil && day == today
+        let average = underWay ? snapshot.averageByTimeOfDay(for: metric, at: now)
+            : day != nil ? snapshot.averagePerFinishedDay(for: metric, at: now) : nil
+        if let average, average > 0 || underWay {
+            let size = (insight.count == 0 ? "None \(verb)" : "\(insight.count.formatted()) \(verb)") + (underWay ? " so far" : "")
+            let by = underWay ? " by \(Self.clockTime(now, in: window))" : ""
+            let figure = average.formatted(.number.precision(.fractionLength(0...1)))
+            let ratio = average > 0 ? Double(insight.count) / average : 0
+            // In the words the size and merge lines use, since "0.5× an average day" reads worse than "under" one.
+            let compared = insight.count == 0 || average == 0
+                ? "an average day has \(average == 0 ? "none" : figure)\(by)"
+                : (0.9...1.1).contains(ratio) ? "about an average day's \(figure)\(by)"
+                : ratio < 1 ? "under an average day's \(figure)\(by)"
+                : "\(ratio.formatted(.number.precision(.fractionLength(0...1))))× an average day's \(figure)\(by)"
             lines.append("\(size) · \(compared)")
         } else if let share = insight.share, insight.count < insight.monthCount {
             lines.append("\(insight.count.formatted()) of \(insight.monthCount.formatted()) \(verb) this month · \(share.formatted(.percent.precision(.fractionLength(0))))")
@@ -199,6 +208,13 @@ struct FocusInsightText: Equatable {
             return "List the \(snapshot.todayCount(for: metric, at: now).formatted()) \(metric.noun) today"
         }
         return "List the \(snapshot.count(for: metric).formatted()) \(metric.noun)"
+    }
+
+    /// The time of day in the zone the month was counted in, as in "by 9:30 AM".
+    static func clockTime(_ date: Date, in window: MonthWindow) -> String {
+        var style = Date.FormatStyle.dateTime.hour().minute()
+        style.timeZone = window.calendar.timeZone
+        return date.formatted(style)
     }
 
     /// A zero-based day with its weekday, in the zone the month was counted in, since "Tue" says more than "Nov 3".

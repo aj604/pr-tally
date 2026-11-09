@@ -113,13 +113,43 @@ private func pr(
         #expect(insight.repositories.map(\.name) == ["m/m", "a/a", "z/z"])
     }
 
-    @Test func theAveragePerDayCountsTodayAmongTheDaysSoFar() {
+    @Test func theAveragePerFinishedDayLeavesTodayOut() {
         let prs = (0..<10).map { PullRequest(id: "\($0)", title: "", url: URL(string: "https://example.test")!, createdAt: date(1), mergedAt: nil, repository: .init(nameWithOwner: "me/app")) }
+        let today = PullRequest(id: "t", title: "", url: URL(string: "https://example.test")!, createdAt: date(5, hour: 8), mergedAt: nil, repository: .init(nameWithOwner: "me/app"))
         let snapshot = MonthSnapshot(
-            login: "me", window: MonthWindow(containing: date(1), calendar: calendar), opened: prs, merged: [],
+            login: "me", window: MonthWindow(containing: date(1), calendar: calendar), opened: prs + [today], merged: [],
             totalContributions: 0, fetchedAt: date(5)
         )
-        #expect(snapshot.averagePerDay(for: .opened, at: date(5, hour: 9)) == 2)
-        #expect(snapshot.averagePerDay(for: .opened, at: date(1).addingTimeInterval(-1)) == nil)
+        // Four days finished before the 5th, whose PR waits for the day to end.
+        #expect(snapshot.averagePerFinishedDay(for: .opened, at: date(5, hour: 9)) == 2.5)
+        #expect(snapshot.averagePerFinishedDay(for: .opened, at: date(1, hour: 9)) == nil)
+        #expect(snapshot.averagePerFinishedDay(for: .opened, at: date(1).addingTimeInterval(-1)) == nil)
+        // Once the month is over every day has finished.
+        #expect(snapshot.averagePerFinishedDay(for: .opened, at: date(30).addingTimeInterval(86_400)) == 11.0 / 30)
+    }
+
+    @Test func theAverageByTimeOfDayCountsOnlyTheSameHoursOfFinishedDays() {
+        func opened(_ id: String, day: Int, hour: Int) -> PullRequest {
+            PullRequest(id: id, title: "", url: URL(string: "https://example.test")!, createdAt: date(day, hour: hour), mergedAt: nil, repository: .init(nameWithOwner: "me/app"))
+        }
+        // Two finished days: the 1st opened at 8 and 20, the 2nd at 9; today has one at 7.
+        let prs = [opened("a", day: 1, hour: 8), opened("b", day: 1, hour: 20), opened("c", day: 2, hour: 9), opened("t", day: 3, hour: 7)]
+        let snapshot = MonthSnapshot(
+            login: "me", window: MonthWindow(containing: date(1), calendar: calendar), opened: prs, merged: [],
+            totalContributions: 0, fetchedAt: date(3)
+        )
+        #expect(snapshot.averageByTimeOfDay(for: .opened, at: date(3, hour: 6)) == 0)
+        #expect(snapshot.averageByTimeOfDay(for: .opened, at: date(3, hour: 10)) == 1)
+        #expect(snapshot.averageByTimeOfDay(for: .opened, at: date(3, hour: 23)) == 1.5)
+        // Merged counts by merge time, so a PR opened early and merged late counts late.
+        let merged = [PullRequest(id: "m", title: "", url: URL(string: "https://example.test")!, createdAt: date(1, hour: 1), mergedAt: date(1, hour: 22), repository: .init(nameWithOwner: "me/app"))]
+        let merges = MonthSnapshot(
+            login: "me", window: snapshot.window, opened: [], merged: merged, totalContributions: 0, fetchedAt: date(3)
+        )
+        #expect(merges.averageByTimeOfDay(for: .merged, at: date(3, hour: 21)) == 0)
+        #expect(merges.averageByTimeOfDay(for: .merged, at: date(3, hour: 23)) == 0.5)
+        // No finished day on the 1st, and none outside the month.
+        #expect(snapshot.averageByTimeOfDay(for: .opened, at: date(1, hour: 23)) == nil)
+        #expect(snapshot.averageByTimeOfDay(for: .opened, at: date(1).addingTimeInterval(-1)) == nil)
     }
 }

@@ -59,4 +59,34 @@ import TallyCore
         #expect(store.snapshot != nil)
         window.orderOut(nil)
     }
+
+    /// `MenuBarExtra` sizes its window to the view, so the view's own width is the popover's.
+    @Test func onlyThePullRequestListWidensThePopover() async {
+        let now = Date()
+        let pr = PullRequest(
+            id: "1", title: "Fix crash when the token is missing", url: URL(string: "https://example.test/1")!,
+            createdAt: now, mergedAt: nil, repository: .init(nameWithOwner: "me/app")
+        )
+        let store = TallyStore(defaults: UserDefaults(suiteName: "PopoverViewLifecycleTests-\(UUID().uuidString)")!) {
+            MonthSnapshot(
+                login: "me", window: MonthWindow(containing: now), opened: [pr], merged: [], totalContributions: 0,
+                fetchedAt: now
+            )
+        }
+        let host = NSHostingView(rootView: PopoverView(store: store))
+        // The view picks up a change of screen on its next update, a turn or two later.
+        func width(on screen: TallyStore.Screen) async -> CGFloat {
+            store.screen = screen
+            for _ in 0..<5 { await Task.yield() }
+            host.layoutSubtreeIfNeeded()
+            return host.fittingSize.width
+        }
+        // Before the numbers arrive the list's screen has nothing to list, so it keeps the summary's width.
+        #expect(await width(on: .pullRequests) == 320)
+
+        await store.refresh()
+        #expect(await width(on: .summary) == 320)
+        #expect(await width(on: .pullRequests) == 400)
+        #expect(await width(on: .settings) == 320)
+    }
 }

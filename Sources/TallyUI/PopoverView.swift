@@ -32,7 +32,7 @@ public struct PopoverView: View {
             header
             if store.screen == .settings {
                 SettingsView(store: store)
-            } else if store.screen == .pullRequests, let snapshot = store.currentSnapshot() {
+            } else if showingList, let snapshot = store.currentSnapshot() {
                 FocusInsightSummary(
                     snapshot: snapshot, metric: store.metric, focus: listFocus, now: Date(), expanded: $insightExpanded
                 ) { focus in
@@ -88,13 +88,18 @@ public struct PopoverView: View {
             footer
         }
         .padding(16)
-        .frame(width: 320)
+        .frame(width: PopoverWidth.points(showingList: showingList))
         .task { await store.refreshIfStale() }
         // `MenuBarExtra` keeps this view alive between openings, with its state, so the reset is explicit.
         .onDisappear {
             store.popoverClosed()
             listFocus = PullRequestFocus()
         }
+    }
+
+    /// The list shows only once there are numbers to list; until then its screen shows what the summary would.
+    private var showingList: Bool {
+        store.screen == .pullRequests && store.currentSnapshot() != nil
     }
 
     private func showPullRequests(_ focus: PullRequestFocus = PullRequestFocus()) {
@@ -104,7 +109,7 @@ public struct PopoverView: View {
 
     private var header: some View {
         HStack(alignment: .firstTextBaseline) {
-            if store.screen == .pullRequests, store.currentSnapshot() != nil {
+            if showingList {
                 Button {
                     store.screen = .summary
                 } label: {
@@ -273,6 +278,18 @@ public struct PopoverView: View {
             .accessibilityLabel("Quit PR Tally")
         }
         .buttonStyle(.borderless)
+    }
+}
+
+/// How wide the popover is. The numbers and settings are laid out to be glanced at in 320pt; the pull request list is
+/// read, and at that width its titles wrap, its filters crowd and the zoom heading's lines wrap beside their buttons, so
+/// it gets more room. Only the list's screen widens, so the summary keeps the shape people know.
+enum PopoverWidth {
+    static let summary: CGFloat = 320
+    static let list: CGFloat = 400
+
+    static func points(showingList: Bool) -> CGFloat {
+        showingList ? list : summary
     }
 }
 

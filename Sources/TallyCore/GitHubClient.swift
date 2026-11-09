@@ -239,7 +239,7 @@ public struct GitHubClient: Sendable {
             pageInfo { hasNextPage endCursor }
             nodes {
               ... on PullRequest {
-                id title url createdAt mergedAt
+                id title url createdAt mergedAt state isDraft
                 repository { nameWithOwner }
               }
             }

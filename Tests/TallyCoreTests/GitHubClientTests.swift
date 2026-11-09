@@ -11,10 +11,13 @@ private let utc: Calendar = {
 private let now = utc.date(from: DateComponents(year: 2026, month: 11, day: 20))!
 private let monthStart = utc.date(from: DateComponents(year: 2026, month: 11, day: 1))!
 
-private func pr(_ id: Int, createdAt: Date, mergedAt: Date? = nil, repo: String = "me/app") -> PullRequest {
+private func pr(
+    _ id: Int, createdAt: Date, mergedAt: Date? = nil, repo: String = "me/app",
+    state: PullRequest.State? = nil, isDraft: Bool = false
+) -> PullRequest {
     PullRequest(
         id: "PR_\(id)", title: "PR \(id)", url: URL(string: "https://github.com/\(repo)/pull/\(id)")!,
-        createdAt: createdAt, mergedAt: mergedAt, repository: .init(nameWithOwner: repo)
+        createdAt: createdAt, mergedAt: mergedAt, repository: .init(nameWithOwner: repo), state: state, isDraft: isDraft
     )
 }
 
@@ -88,6 +91,8 @@ private final class FakeGitHub: Sendable {
                     "createdAt": pr.createdAt.formatted(.iso8601),
                     "mergedAt": pr.mergedAt.map { $0.formatted(.iso8601) } as Any? ?? NSNull(),
                     "repository": ["nameWithOwner": pr.repository.nameWithOwner],
+                    "state": pr.state?.rawValue as Any? ?? NSNull(),
+                    "isDraft": pr.isDraft,
                 ] as [String: Any]
             },
         ]
@@ -167,6 +172,67 @@ private func client(_ fake: FakeGitHub, overlap: Overlap) -> GitHubClient {
         let snapshot = try await client(FakeGitHub(prs: prs)).fetchSnapshot(at: now, calendar: utc)
         #expect(snapshot.count(for: .opened) == 2500)
         #expect(Set(snapshot.opened.map(\.id)).count == 2500)
+    }
+
+    @Test func carriesEachPullRequestsStateAndDraftFlag() async throws {
+        let prs = [
+            pr(1, createdAt: monthStart, state: .open),
+            pr(2, createdAt: monthStart.addingTimeInterval(60), state: .open, isDraft: true),
+            pr(3, createdAt: monthStart.addingTimeInterval(120), state: .closed),
+            pr(4, createdAt: monthStart.addingTimeInterval(180), mergedAt: monthStart.addingTimeInterval(240), state: .merged),
+        ]
+        let snapshot = try await client(FakeGitHub(prs: prs)).fetchSnapshot(at: now, calendar: utc)
+        #expect(snapshot.opened == prs)
+        #expect(snapshot.opened.map(\.state) == [.open, .open, .closed, .merged])
+        #expect(snapshot.opened.map(\.isDraft) == [false, true, false, false])
+    }
+
+    @Test func keepsStatesAcrossSplitSearchesPastTheCap() async throws {
+        // Every fifth PR is a draft, so a lost flag in any of the split ranges shows up.
+        let prs = (0..<2500).map {
+            pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 840), state: .open, isDraft: $0 % 5 == 0)
+        }
+        let snapshot = try await client(FakeGitHub(prs: prs)).fetchSnapshot(at: now, calendar: utc)
+        #expect(snapshot.opened.count == 2500)
+        #expect(snapshot.opened.filter(\.isDraft).count == 500)
+        #expect(snapshot.opened.allSatisfy { $0.state == .open })
+    }
+
+    @Test func readsAPullRequestWithoutAStateAsUnknownRatherThanOpen() throws {
+        let json = Data(#"""
+        {"id":"PR_1","title":"Old","url":"https://github.com/me/app/pull/1","createdAt":"2026-11-01T00:00:00Z",
+         "mergedAt":null,"repository":{"nameWithOwner":"me/app"}}
+        """#.utf8)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode(PullRequest.self, from: json)
+        #expect(decoded.state == nil)
+        #expect(decoded.isDraft == false)
+    }
+
+    @Test func aStateGitHubAddsLaterDoesNotFailTheFetch() throws {
+        let json = Data(#"""
+        {"id":"PR_1","title":"New","url":"https://github.com/me/app/pull/1","createdAt":"2026-11-01T00:00:00Z",
+         "mergedAt":null,"repository":{"nameWithOwner":"me/app"},"state":"QUEUED","isDraft":true}
+        """#.utf8)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode(PullRequest.self, from: json)
+        #expect(decoded.state == nil)
+        #expect(decoded.isDraft)
+    }
+
+    @Test func asksGitHubForStateAndDraft() async throws {
+        let queries = Box<[String]>([])
+        let fake = FakeGitHub(prs: [pr(1, createdAt: monthStart, state: .open)])
+        _ = try await GitHubClient { body in
+            let request = try JSONSerialization.jsonObject(with: body) as! [String: Any]
+            queries.value.append(request["query"] as! String)
+            return try fake.respond(to: body)
+        }.fetchSnapshot(at: now, calendar: utc)
+        let search = queries.value.filter { $0.contains("search(") }
+        #expect(!search.isEmpty)
+        #expect(search.allSatisfy { $0.contains("state") && $0.contains("isDraft") })
     }
 
     @Test func tracksOpenedAndMergedSeparately() async throws {

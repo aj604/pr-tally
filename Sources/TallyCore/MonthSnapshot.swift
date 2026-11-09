@@ -6,20 +6,54 @@ public struct PullRequest: Sendable, Equatable, Decodable, Identifiable {
         public init(nameWithOwner: String) { self.nameWithOwner = nameWithOwner }
     }
 
+    /// GitHub's own word for where a PR stands.
+    public enum State: String, Sendable, Equatable, Decodable {
+        case open = "OPEN"
+        case closed = "CLOSED"
+        case merged = "MERGED"
+    }
+
     public let id: String
     public let title: String
     public let url: URL
     public let createdAt: Date
     public let mergedAt: Date?
     public let repository: Repository
+    /// Nil when GitHub didn't say, as for a snapshot saved before this was fetched, or a state this app
+    /// doesn't know. Nil means "unknown", never "open".
+    public let state: State?
+    /// Only meaningful while `state` is open: GitHub keeps the flag on a PR after it merges or closes.
+    public let isDraft: Bool
 
-    public init(id: String, title: String, url: URL, createdAt: Date, mergedAt: Date?, repository: Repository) {
+    public init(
+        id: String, title: String, url: URL, createdAt: Date, mergedAt: Date?, repository: Repository,
+        state: State? = nil, isDraft: Bool = false
+    ) {
         self.id = id
         self.title = title
         self.url = url
         self.createdAt = createdAt
         self.mergedAt = mergedAt
         self.repository = repository
+        self.state = state
+        self.isDraft = isDraft
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, url, createdAt, mergedAt, repository, state, isDraft
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        url = try container.decode(URL.self, forKey: .url)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        mergedAt = try container.decodeIfPresent(Date.self, forKey: .mergedAt)
+        repository = try container.decode(Repository.self, forKey: .repository)
+        // A state added to GitHub later must not fail the whole refresh, so it reads as unknown.
+        state = (try? container.decodeIfPresent(State.self, forKey: .state)) ?? nil
+        isDraft = try container.decodeIfPresent(Bool.self, forKey: .isDraft) ?? false
     }
 }
 

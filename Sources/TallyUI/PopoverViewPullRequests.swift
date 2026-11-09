@@ -169,7 +169,7 @@ struct PullRequestList: View {
                         .frame(maxWidth: 128)
                 }
             }
-            filters
+            funnelFilter
             // The count lives in the field's placeholder and the copy action at its end, so the controls take one
             // row fewer before the first PR.
             HStack(spacing: 6) {
@@ -295,23 +295,19 @@ struct PullRequestList: View {
         .accessibilityValue(target?.title ?? "")
     }
 
-    @ViewBuilder private var filters: some View {
-        if repository != nil || funnel != nil {
-            HStack(spacing: 6) {
-                if let repository {
-                    FilterChip(title: repository, help: "Show every repository") { self.repository = nil }
-                }
-                switch funnel {
-                case .notMerged:
-                    FilterChip(title: "Not merged", help: "Show merged PRs too") { funnel = nil }
-                case .carriedIn:
-                    FilterChip(title: "Opened before \(snapshot.window.monthTitle)", help: "Show PRs opened this month too") {
-                        funnel = nil
-                    }
-                case nil:
-                    EmptyView()
-                }
+    /// A merge-funnel part has no picker of its own, so it shows as a chip whose × removes it. A repository needs no
+    /// chip: the repository picker already names it and its "All repositories" choice removes it, so a second control
+    /// would only push the first PR a row further down.
+    @ViewBuilder private var funnelFilter: some View {
+        switch funnel {
+        case .notMerged:
+            FilterChip(title: "Not merged", help: "Show merged PRs too") { funnel = nil }
+        case .carriedIn:
+            FilterChip(title: "Opened before \(snapshot.window.monthTitle)", help: "Show PRs opened this month too") {
+                funnel = nil
             }
+        case nil:
+            EmptyView()
         }
     }
 

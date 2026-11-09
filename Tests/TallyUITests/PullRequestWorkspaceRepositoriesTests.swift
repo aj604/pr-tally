@@ -113,7 +113,7 @@ import TallyCore
         select("acme/infra (2)", in: picker)
         await settle(host)
         #expect(picker.titleOfSelectedItem == "acme/infra (2)")
-        // One matching app PR, but two matching infra PRs; the repository chip occupies the same space in both.
+        // One matching app PR, but two matching infra PRs.
         #expect(host.fittingSize.height > appHeight)
         #expect(picker.itemTitles == titles)
         #expect(field.stringValue == "Shared")
@@ -143,6 +143,33 @@ import TallyCore
         await settle(host)
         #expect(picker.titleOfSelectedItem == "All repositories (4)")
         #expect(picker.itemTitles == ["All repositories (4)", "acme/infra (2)", "me/app (2)"])
+    }
+
+    @Test func aPickedRepositoryTakesNoRowBeyondThePicker() async throws {
+        let (host, window) = await hosted(focus: .init(repository: "me/app"))
+        defer { window.orderOut(nil) }
+        let picker = try #require(descendants(of: host).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Repository" })
+        #expect(picker.titleOfSelectedItem == "me/app (2)")
+
+        // The same two rows with nothing filtered: the picker reads "All repositories" and the list is no shorter.
+        let only = snapshot().opened.filter { $0.repository.nameWithOwner == "me/app" }
+        let unfiltered = NSHostingView(rootView: PullRequestList(
+            snapshot: MonthSnapshot(login: "fixture", window: month, opened: only, merged: [], totalContributions: 0, fetchedAt: now),
+            metric: .opened, now: now
+        ))
+        let other = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 288, height: 420), styleMask: [.titled], backing: .buffered, defer: false
+        )
+        other.contentView = unfiltered
+        other.orderFront(nil)
+        defer { other.orderOut(nil) }
+        await settle(unfiltered)
+        // A picked repository opens on the whole month, so the other list shows it too.
+        let scope = try #require(descendants(of: unfiltered).compactMap { $0 as? NSSegmentedControl }.first)
+        scope.selectedSegment = 1
+        scope.sendAction(scope.action, to: scope.target)
+        await settle(unfiltered)
+        #expect(host.fittingSize.height == unfiltered.fittingSize.height)
     }
 
     @Test func longRepositoryNamesFitThePopoverAndRemainWholeInTheMenu() async throws {

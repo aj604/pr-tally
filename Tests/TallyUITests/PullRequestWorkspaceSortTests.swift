@@ -7,11 +7,15 @@ import TallyCore
 @MainActor @Suite(.serialized) struct PullRequestWorkspaceSortTests {
     private let now = Date(timeIntervalSince1970: 1_794_492_000)
 
-    private func pr(_ id: String, openedHoursAgo: Double, mergedAfterHours: Double? = nil) -> PullRequest {
+    /// With no `state`, a PR that hasn't merged is one whose state isn't known, as in a snapshot saved before states were fetched.
+    private func pr(
+        _ id: String, openedHoursAgo: Double, mergedAfterHours: Double? = nil, state: PullRequest.State? = nil, isDraft: Bool = false
+    ) -> PullRequest {
         let opened = now.addingTimeInterval(-openedHoursAgo * 3_600)
         return PullRequest(
             id: id, title: "Work \(id)", url: URL(string: "https://github.com/me/app/pull/\(id)")!, createdAt: opened,
-            mergedAt: mergedAfterHours.map { opened.addingTimeInterval($0 * 3_600) }, repository: .init(nameWithOwner: "me/app")
+            mergedAt: mergedAfterHours.map { opened.addingTimeInterval($0 * 3_600) }, repository: .init(nameWithOwner: "me/app"),
+            state: state, isDraft: isDraft
         )
     }
 
@@ -24,17 +28,17 @@ import TallyCore
     }
 
     @Test func newestFirstKeepsTheListsOrder() {
-        #expect(PullRequestWorkspaceSort.newest.apply(to: newestFirst).map(\.id) == ["1", "2", "3", "4"])
+        #expect(PullRequestWorkspaceSort.newest.apply(to: newestFirst, at: now).map(\.id) == ["1", "2", "3", "4"])
     }
 
     @Test func slowestToMergeRanksMergedPullRequestsByTheirTimeAndLeavesUnmergedOnesBelow() {
-        #expect(PullRequestWorkspaceSort.slowestToMerge.apply(to: newestFirst).map(\.id) == ["3", "4", "2", "1"])
+        #expect(PullRequestWorkspaceSort.slowestToMerge.apply(to: newestFirst, at: now).map(\.id) == ["3", "4", "2", "1"])
     }
 
     @Test func slowestToMergeRanksTheExactTimeNotTheRoundedOne() {
         // Both read "Merged in 5h"; the one that took longer still ranks first.
         let prs = [pr("1", openedHoursAgo: 10, mergedAfterHours: 4.6), pr("2", openedHoursAgo: 20, mergedAfterHours: 5.4)]
-        #expect(PullRequestWorkspaceSort.slowestToMerge.apply(to: prs).map(\.id) == ["2", "1"])
+        #expect(PullRequestWorkspaceSort.slowestToMerge.apply(to: prs, at: now).map(\.id) == ["2", "1"])
     }
 
     @Test func pullRequestsThatTookTheSameTimeKeepTheirNewestFirstOrder() {
@@ -42,15 +46,39 @@ import TallyCore
             pr("1", openedHoursAgo: 2), pr("2", openedHoursAgo: 10, mergedAfterHours: 1),
             pr("3", openedHoursAgo: 20, mergedAfterHours: 1), pr("4", openedHoursAgo: 30),
         ]
-        #expect(PullRequestWorkspaceSort.slowestToMerge.apply(to: prs).map(\.id) == ["2", "3", "1", "4"])
+        #expect(PullRequestWorkspaceSort.slowestToMerge.apply(to: prs, at: now).map(\.id) == ["2", "3", "1", "4"])
+    }
+
+    @Test func slowestToMergeRanksOpenPullRequestsByHowLongTheyHaveWaitedAmongTheMergedOnes() {
+        // Open 100 hours, merged in 48, draft for 20, merged in 1, then closed and not-known with no time to rank.
+        let prs = [
+            pr("1", openedHoursAgo: 2, state: .closed), pr("2", openedHoursAgo: 10, mergedAfterHours: 1, state: .merged),
+            pr("3", openedHoursAgo: 20, state: .open, isDraft: true), pr("4", openedHoursAgo: 30),
+            pr("5", openedHoursAgo: 72, mergedAfterHours: 48, state: .merged), pr("6", openedHoursAgo: 100, state: .open),
+        ]
+        #expect(PullRequestWorkspaceSort.slowestToMerge.apply(to: prs, at: now).map(\.id) == ["6", "5", "3", "2", "1", "4"])
+    }
+
+    @Test func anOpenPullRequestsWaitRunsToNow() {
+        let prs = [pr("1", openedHoursAgo: 10, state: .open), pr("2", openedHoursAgo: 30, mergedAfterHours: 20, state: .merged)]
+        #expect(PullRequestWorkspaceSort.slowestToMerge.apply(to: prs, at: now).map(\.id) == ["2", "1"])
+        let later = now.addingTimeInterval(11 * 3_600)
+        #expect(PullRequestWorkspaceSort.slowestToMerge.apply(to: prs, at: later).map(\.id) == ["1", "2"])
+    }
+
+    @Test func isOfferedOnceTwoPullRequestsAreOpenOrMerged() {
+        let open = [pr("1", openedHoursAgo: 1, state: .open), pr("2", openedHoursAgo: 2, state: .open, isDraft: true)]
+        #expect(PullRequestWorkspaceSort.isOffered(.newest, for: open, at: now))
+        let untimed = [pr("1", openedHoursAgo: 1, state: .closed), pr("2", openedHoursAgo: 2), pr("3", openedHoursAgo: 3, state: .open)]
+        #expect(!PullRequestWorkspaceSort.isOffered(.newest, for: untimed, at: now))
     }
 
     @Test func isOfferedOnceTwoPullRequestsHaveMergedOrWhileChosen() {
         let oneMerged = Array(newestFirst.prefix(2))
-        #expect(!PullRequestWorkspaceSort.isOffered(.newest, for: oneMerged))
-        #expect(PullRequestWorkspaceSort.isOffered(.newest, for: Array(newestFirst.prefix(3))))
-        #expect(PullRequestWorkspaceSort.isOffered(.slowestToMerge, for: oneMerged))
-        #expect(PullRequestWorkspaceSort.isOffered(.slowestToMerge, for: []))
+        #expect(!PullRequestWorkspaceSort.isOffered(.newest, for: oneMerged, at: now))
+        #expect(PullRequestWorkspaceSort.isOffered(.newest, for: Array(newestFirst.prefix(3)), at: now))
+        #expect(PullRequestWorkspaceSort.isOffered(.slowestToMerge, for: oneMerged, at: now))
+        #expect(PullRequestWorkspaceSort.isOffered(.slowestToMerge, for: [], at: now))
     }
 
     @Test func onlyNewestFirstSplitsTheMonthIntoDays() {

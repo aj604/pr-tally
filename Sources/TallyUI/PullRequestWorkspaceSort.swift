@@ -4,9 +4,11 @@ import TallyCore
 
 /// The order the list reads in. Newest first follows the day the metric counts; slowest to merge puts the PRs that
 /// took longest from opening to merging at the top, so the ones that held up a day, a repository or the month are the
-/// first rows rather than a scan for the biggest "Merged in". It sorts by the exact time each took, not the rounded
-/// one the row shows, keeps PRs that took the same time in their newest-first order, and leaves PRs that haven't
-/// merged below the merged ones, newest first, since they have no merge time to rank.
+/// first rows rather than a scan for the biggest "Merged in". A PR still open or in draft ranks by how long it has been
+/// waiting so far, among the merged ones: one open for six days has already been slower to merge than one merged in
+/// two. It sorts by exact times, not the rounded ones the rows show, keeps PRs that took the same time in their
+/// newest-first order, and leaves PRs with no time to rank (closed without merging, or of a state not known yet)
+/// at the bottom, newest first.
 enum PullRequestWorkspaceSort: Hashable, CaseIterable {
     case newest, slowestToMerge
 
@@ -17,20 +19,26 @@ enum PullRequestWorkspaceSort: Hashable, CaseIterable {
         }
     }
 
-    /// `pullRequests` come newest first, as `listedPullRequests` gives them.
-    func apply(to pullRequests: [PullRequest]) -> [PullRequest] {
+    /// `pullRequests` come newest first, as `listedPullRequests` gives them; `now` is when an open PR's wait ends.
+    func apply(to pullRequests: [PullRequest], at now: Date) -> [PullRequest] {
         guard self == .slowestToMerge else { return pullRequests }
-        let merged = pullRequests.enumerated().compactMap { index, pr in
-            pr.mergedAt.map { (pr, $0.timeIntervalSince(pr.createdAt), index) }
+        let timed = pullRequests.enumerated().compactMap { index, pr in
+            Self.timeToMerge(pr, at: now).map { (pr, $0, index) }
         }
-        let ranked = merged.sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.2 < $1.2 }.map(\.0)
-        return ranked + pullRequests.filter { $0.mergedAt == nil }
+        let ranked = timed.sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.2 < $1.2 }.map(\.0)
+        return ranked + pullRequests.filter { Self.timeToMerge($0, at: now) == nil }
     }
 
-    /// Ranking needs two merge times to tell apart, so the menu stays out of the way until the list holds two merged
-    /// PRs. A chosen order is always offered, since the menu is also how it is put back.
-    static func isOffered(_ selected: Self, for pullRequests: [PullRequest]) -> Bool {
-        selected != .newest || pullRequests.lazy.filter { $0.mergedAt != nil }.prefix(2).count == 2
+    /// Ranking needs two times to tell apart, so the menu stays out of the way until the list holds two PRs that are
+    /// merged or still open. A chosen order is always offered, since the menu is also how it is put back.
+    static func isOffered(_ selected: Self, for pullRequests: [PullRequest], at now: Date) -> Bool {
+        selected != .newest || pullRequests.lazy.filter { timeToMerge($0, at: now) != nil }.prefix(2).count == 2
+    }
+
+    /// From opening to merging, or to `now` for a PR still waiting; nil when the PR has no such time.
+    private static func timeToMerge(_ pr: PullRequest, at now: Date) -> TimeInterval? {
+        if let mergedAt = pr.mergedAt { return mergedAt.timeIntervalSince(pr.createdAt) }
+        return PullRequestWorkspaceOpenTime(pr, at: now) == nil ? nil : now.timeIntervalSince(pr.createdAt)
     }
 
     /// Whether the whole month splits into days in this order. Slowest to merge ranks across the month, so its rows

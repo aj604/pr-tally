@@ -149,7 +149,7 @@ struct PullRequestList: View {
         let statuses = PullRequestWorkspaceStatusFilter(inRepository, funnel: members, selected: statusChoice)
         let scoped = PullRequestWorkspaceStatusFilter.apply(statusChoice, to: inRepository, funnel: members)
         let search = PullRequestWorkspaceSearch(searchText)
-        let pullRequests = sort.apply(to: search.results(in: scoped))
+        let pullRequests = sort.apply(to: search.results(in: scoped), at: now)
         let metrics = PullRequestWorkspaceMetric { other in
             other == metric ? scoped.count : PullRequestWorkspaceStatusFilter.apply(
                 PullRequestWorkspaceMetric.choice(statusChoice, keptFor: other),
@@ -195,7 +195,7 @@ struct PullRequestList: View {
                     .help("Clear search")
                     .accessibilityLabel("Clear search")
                 }
-                if PullRequestWorkspaceSort.isOffered(sort, for: scoped) {
+                if PullRequestWorkspaceSort.isOffered(sort, for: scoped, at: now) {
                     PullRequestWorkspaceSortPicker(selection: $sort)
                         .frame(width: 24, height: 24)
                 }
@@ -325,8 +325,10 @@ struct PullRequestList: View {
     private func row(_ pr: PullRequest) -> some View {
         let date = (metric == .opened ? pr.createdAt : pr.mergedAt) ?? pr.createdAt
         let mergeTime = PullRequestWorkspaceMergeTime(pr)
-        // A merge time already says the PR merged, so it takes the status label's place rather than sitting beside it.
-        let status = mergeTime == nil ? PullRequestWorkspaceStatus.badge(for: pr, metric: metric) : nil
+        let openTime = PullRequestWorkspaceOpenTime(pr, at: now)
+        // A merge or open time already says where the PR stands, so it takes the status label's place rather than
+        // sitting beside it.
+        let status = mergeTime == nil && openTime == nil ? PullRequestWorkspaceStatus.badge(for: pr, metric: metric) : nil
         let review = PullRequestWorkspaceReview.badge(for: pr, metric: metric)
         let checks = PullRequestWorkspaceChecks.badge(for: pr, metric: metric)
         return HStack(spacing: 6) {
@@ -348,6 +350,11 @@ struct PullRequestList: View {
                                 .lineLimit(1).fixedSize()
                                 .accessibilityLabel(mergeTime.accessibilityLabel)
                         }
+                        if let openTime {
+                            Text(openTime.label).font(.caption2.weight(.medium)).foregroundStyle(openTime.tint)
+                                .lineLimit(1).fixedSize()
+                                .accessibilityLabel(openTime.accessibilityLabel)
+                        }
                         if let review {
                             Text(review.label).font(.caption2.weight(.medium)).foregroundStyle(review.tint)
                                 .lineLimit(1).fixedSize()
@@ -368,7 +375,7 @@ struct PullRequestList: View {
             .buttonStyle(.plain)
             .help(pr.title)
             .accessibilityLabel(
-                [pr.title, pr.repository.nameWithOwner, status?.label, mergeTime?.accessibilityLabel, review?.label, checks?.label].compactMap { $0 }.joined(separator: ", ")
+                [pr.title, pr.repository.nameWithOwner, status?.label, mergeTime?.accessibilityLabel, openTime?.accessibilityLabel, review?.label, checks?.label].compactMap { $0 }.joined(separator: ", ")
             )
             PullRequestWorkspaceCopyLinkButton(pullRequest: pr, pasteboard: copyLinkPasteboard)
                 .frame(width: 24, height: 24)

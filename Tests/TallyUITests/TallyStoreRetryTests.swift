@@ -139,7 +139,8 @@ private func delay(_ failures: Int, _ error: Error? = Down(), base: Duration = m
         }
         store.retryDelay = .milliseconds(20)
         store.start(observingSystem: false)
-        for _ in 0..<200 where times.count < 1 { try await Task.sleep(for: .milliseconds(10)) }
+        // Recorded as the fetch starts; the failure has to land before a refresh of our own can run.
+        for _ in 0..<200 where store.errorMessage == nil { try await Task.sleep(for: .milliseconds(10)) }
         // What saving a new token does: succeeds while the schedule is waiting for the limit to lift.
         await store.refresh()
         #expect(times.count == 2)

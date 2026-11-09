@@ -38,8 +38,10 @@ struct MonthCharts: View {
                     LegendKey(label: "Steady pace", color: Self.neutral, dashed: true)
                 }
                 if let projection {
-                    Text("Likely finish: \(projection.low.formatted())–\(projection.high.formatted())")
+                    let outlook = MonthInsightOutlookText(projection: projection, goal: goal)
+                    Text(outlook.line)
                         .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                        .help(outlook.help)
                 }
                 runningTotal.frame(height: 96)
             }

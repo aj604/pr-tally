@@ -46,11 +46,15 @@ public struct PullRequest: Sendable, Equatable, Decodable, Identifiable {
     /// Nil when the PR has no checks or statuses at all, or the snapshot predates this field, or GitHub used a state
     /// this app doesn't know. Nil means "no signal", never "passing".
     public let checks: ChecksState?
+    /// Lines added, or nil when the snapshot predates this field. Nil means "unknown", never "none".
+    public let additions: Int?
+    /// Lines deleted, or nil when the snapshot predates this field.
+    public let deletions: Int?
 
     public init(
         id: String, title: String, url: URL, createdAt: Date, mergedAt: Date?, repository: Repository,
         state: State? = nil, isDraft: Bool = false, reviewDecision: ReviewDecision? = nil,
-        checks: ChecksState? = nil
+        checks: ChecksState? = nil, additions: Int? = nil, deletions: Int? = nil
     ) {
         self.id = id
         self.title = title
@@ -62,6 +66,14 @@ public struct PullRequest: Sendable, Equatable, Decodable, Identifiable {
         self.isDraft = isDraft
         self.reviewDecision = reviewDecision
         self.checks = checks
+        self.additions = additions
+        self.deletions = deletions
+    }
+
+    /// Lines added and deleted together, GitHub's measure of a PR's size, or nil when either is unknown.
+    public var linesChanged: Int? {
+        guard let additions, let deletions else { return nil }
+        return additions + deletions
     }
 
     private struct ChecksRollup: Decodable {
@@ -76,6 +88,7 @@ public struct PullRequest: Sendable, Equatable, Decodable, Identifiable {
 
     private enum CodingKeys: String, CodingKey {
         case id, title, url, createdAt, mergedAt, repository, state, isDraft, reviewDecision, statusCheckRollup
+        case additions, deletions
     }
 
     public init(from decoder: Decoder) throws {
@@ -94,6 +107,8 @@ public struct PullRequest: Sendable, Equatable, Decodable, Identifiable {
         // GitHub nests the state in a rollup object that is null for a PR without checks.
         let rollup = (try? container.decodeIfPresent(ChecksRollup.self, forKey: .statusCheckRollup)) ?? nil
         checks = rollup?.state
+        additions = try container.decodeIfPresent(Int.self, forKey: .additions)
+        deletions = try container.decodeIfPresent(Int.self, forKey: .deletions)
     }
 }
 

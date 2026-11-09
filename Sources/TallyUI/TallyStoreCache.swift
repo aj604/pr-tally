@@ -48,6 +48,8 @@ private struct StoredSnapshot: Codable {
         let isDraft: Bool?
         let reviewDecision: String?
         let checks: String?
+        let additions: Int?
+        let deletions: Int?
 
         init(_ pr: PullRequest) {
             id = pr.id
@@ -60,6 +62,8 @@ private struct StoredSnapshot: Codable {
             isDraft = pr.isDraft
             reviewDecision = pr.reviewDecision?.rawValue
             checks = pr.checks?.rawValue
+            additions = pr.additions
+            deletions = pr.deletions
         }
 
         var pullRequest: PullRequest {
@@ -67,7 +71,7 @@ private struct StoredSnapshot: Codable {
                 id: id, title: title, url: url, createdAt: createdAt, mergedAt: mergedAt,
                 repository: .init(nameWithOwner: repository), state: state.flatMap(PullRequest.State.init),
                 isDraft: isDraft ?? false, reviewDecision: reviewDecision.flatMap(PullRequest.ReviewDecision.init),
-                checks: checks.flatMap(PullRequest.ChecksState.init)
+                checks: checks.flatMap(PullRequest.ChecksState.init), additions: additions, deletions: deletions
             )
         }
     }

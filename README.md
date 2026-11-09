@@ -29,9 +29,10 @@ When the PR list opens on part of the month (a day from the charts or the goal-h
 - For a day: how many PRs it had against an average day so far this month ("4 opened · 2× an average day")
 - Otherwise: its share of the month ("18 of 45 opened this month · 40%")
 - How many of its PRs merged and the median time from opening to merging, plus how many are still open, drafts, or closed without merging
+- How big its PRs run: the median lines changed (added plus deleted), against the month's median when the slice is part of the month ("Median 270 lines changed · 2.6× the month's 103")
 - Which repos the PRs are in, unless you zoomed to one
 
-Open, draft and closed are only counted for PRs whose state GitHub reported. The heading describes the slice you opened; filters you change inside the list don't change it.
+Open, draft and closed are only counted for PRs whose state GitHub reported, and size only for PRs counted since PR Tally started fetching it (the next refresh fills it in). The heading describes the slice you opened; filters you change inside the list don't change it.
 
 ## Install
 

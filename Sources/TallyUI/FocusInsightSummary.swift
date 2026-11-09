@@ -26,7 +26,8 @@ struct FocusInsightSummary: View {
 }
 
 /// The words for a slice: a title saying where the list is zoomed to, then what the slice amounts to, how its PRs
-/// stand, and where they are. Nil for the unfocused list, which is the whole month the summary already describes.
+/// stand, how big they run beside the month's, and where they are. Nil for the unfocused list, which is the whole month
+/// the summary already describes.
 struct FocusInsightText: Equatable {
     let title: String
     let lines: [String]
@@ -79,6 +80,21 @@ struct FocusInsightText: Equatable {
         if insight.closed > 0 { standing.append("\(insight.closed.formatted()) closed") }
         if !standing.isEmpty { lines.append(standing.joined(separator: " · ")) }
 
+        if let size = insight.medianLinesChanged {
+            let median = "Median \(Self.lineCount(size)) changed"
+            // Beside the month only when the slice is a part of it: the whole month is always its own size.
+            if insight.count < insight.monthCount, let month = snapshot.medianLinesChanged(for: metric), month > 0 {
+                let ratio = size / month
+                let monthLines = Int(month.rounded()).formatted()
+                // A ratio under one reads as "0.1×" or worse, "0×", so smaller slices just say so.
+                lines.append("\(median) · " + ((0.9...1.1).contains(ratio) ? "about the month's \(monthLines)"
+                    : ratio < 1 ? "under the month's \(monthLines)"
+                    : "\(ratio.formatted(.number.precision(.fractionLength(0...1))))× the month's \(monthLines)"))
+            } else {
+                lines.append(median)
+            }
+        }
+
         let repositories = insight.repositories
         if focus.repository == nil, let top = repositories.first {
             if repositories.count == 1 {
@@ -92,7 +108,7 @@ struct FocusInsightText: Equatable {
         self.lines = lines
 
         help = "Compared with every PR \(verb) this month. Merge times run from opening to merging; "
-            + "open, draft and closed count only PRs whose state GitHub reported."
+            + "open, draft and closed count only PRs whose state GitHub reported. Size is lines added plus deleted."
     }
 
     /// A zero-based day with its weekday, in the zone the month was counted in, since "Tue" says more than "Nov 3".
@@ -100,6 +116,12 @@ struct FocusInsightText: Equatable {
         var style = Date.FormatStyle.dateTime.weekday(.abbreviated).month(.abbreviated).day()
         style.timeZone = window.calendar.timeZone
         return window.calendar.date(byAdding: .day, value: day, to: window.start)!.formatted(style)
+    }
+
+    /// A median size in whole lines, since half a line means nothing.
+    static func lineCount(_ lines: Double) -> String {
+        let count = Int(lines.rounded())
+        return "\(count.formatted()) \(count == 1 ? "line" : "lines")"
     }
 
     /// A span short enough to read at a glance: minutes under an hour, hours under two days, then days.

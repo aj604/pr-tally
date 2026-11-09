@@ -266,7 +266,7 @@ public struct GitHubClient: Sendable {
             pageInfo { hasNextPage endCursor }
             nodes {
               ... on PullRequest {
-                id title url createdAt mergedAt state isDraft\(extras)
+                id title url createdAt mergedAt state isDraft additions deletions\(extras)
                 repository { nameWithOwner }
               }
             }

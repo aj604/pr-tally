@@ -84,6 +84,36 @@ private func text(_ focus: PullRequestFocus, metric: PRMetric = .opened) -> Focu
         #expect(text.lines.first == "17 of 20 opened this month · 85%")
     }
 
+    @Test func aSliceSaysHowBigItsPullRequestsRunBesideTheMonths() throws {
+        func sized(_ id: String, day: Int, repo: String = "me/app", lines: Int) -> PullRequest {
+            PullRequest(
+                id: id, title: "Fixture", url: URL(string: "https://example.test/\(id)")!, createdAt: date(day, hour: 9),
+                mergedAt: nil, repository: .init(nameWithOwner: repo), additions: lines, deletions: 0
+            )
+        }
+        // The month's median is 50 lines; acme/infra's is 300, me/app's 50 and the 4th's 48.
+        let opened = [
+            sized("a", day: 3, repo: "acme/infra", lines: 300), sized("b", day: 3, repo: "acme/infra", lines: 300),
+            sized("c", day: 4, lines: 46), sized("d", day: 4, lines: 50), sized("e", day: 5, lines: 1),
+        ]
+        let snapshot = MonthSnapshot(
+            login: "me", window: MonthWindow(containing: now, calendar: calendar), opened: opened, merged: [],
+            totalContributions: 0, fetchedAt: now
+        )
+        func text(_ focus: PullRequestFocus) throws -> FocusInsightText {
+            try #require(FocusInsightText(snapshot: snapshot, metric: .opened, focus: focus, now: now))
+        }
+        #expect(try text(PullRequestFocus(repository: "acme/infra")).lines.last == "Median 300 lines changed · 6× the month's 50")
+        #expect(try text(PullRequestFocus(day: 3)).lines.contains("Median 48 lines changed · about the month's 50"))
+        #expect(try text(PullRequestFocus(day: 4)).lines.contains("Median 1 line changed · under the month's 50"))
+        // The whole month is its own size, so it isn't compared with itself.
+        #expect(try text(PullRequestFocus(metric: .opened)).lines.contains("Median 50 lines changed"))
+    }
+
+    @Test func aSliceWithoutSizesSaysNothingAboutSize() throws {
+        #expect(try #require(text(PullRequestFocus(repository: "acme/infra"))).lines.allSatisfy { !$0.contains("lines") })
+    }
+
     @Test func durationsReadInMinutesHoursThenDays() {
         #expect(FocusInsightText.duration(20) == "1m")
         #expect(FocusInsightText.duration(45 * 60) == "45m")
@@ -94,14 +124,14 @@ private func text(_ focus: PullRequestFocus, metric: PRMetric = .opened) -> Focu
 }
 
 @Suite struct FocusInsightCacheTests {
-    @Test func statesSurviveTheCacheAndAnOlderFileStillLoads() throws {
+    @Test func statesAndSizesSurviveTheCacheAndAnOlderFileStillLoads() throws {
         let url = FileManager.default.temporaryDirectory.appending(path: "\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: url) }
         let cache = SnapshotCache(url: url)
         let draft = PullRequest(
             id: "x", title: "Fixture", url: URL(string: "https://example.test/x")!, createdAt: date(3), mergedAt: nil,
             repository: .init(nameWithOwner: "me/app"), state: .open, isDraft: true, reviewDecision: .approved,
-            checks: .failure
+            checks: .failure, additions: 12, deletions: 3
         )
         cache.save(MonthSnapshot(
             login: "me", window: MonthWindow(containing: now, calendar: calendar), opened: [draft], merged: [],
@@ -112,11 +142,12 @@ private func text(_ focus: PullRequestFocus, metric: PRMetric = .opened) -> Focu
         // A file saved before these were stored has none of their keys.
         var json = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
         var opened = try #require(json["opened"] as? [[String: Any]])
-        for key in ["state", "isDraft", "reviewDecision", "checks"] { opened[0][key] = nil }
+        for key in ["state", "isDraft", "reviewDecision", "checks", "additions", "deletions"] { opened[0][key] = nil }
         json["opened"] = opened
         try JSONSerialization.data(withJSONObject: json).write(to: url)
         let loaded = try #require(cache.load()?.opened.first)
         #expect(loaded.id == "x")
         #expect(loaded.state == nil && !loaded.isDraft && loaded.reviewDecision == nil && loaded.checks == nil)
+        #expect(loaded.additions == nil && loaded.deletions == nil)
     }
 }

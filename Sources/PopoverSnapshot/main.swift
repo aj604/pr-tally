@@ -129,6 +129,11 @@ func renderFixture(to path: String, listOpen: Bool, focusDay: Int? = nil, focusR
         ("acme/infra", "Retry failed uploads with exponential backoff and a jitter that depends on the attempt"),
         ("acme/infra", "Add dashboards for queue depth"), ("me/dotfiles", "Tidy zsh startup"),
     ]
+    // Infrastructure changes run several times the size of the app's, and dotfile tweaks are a few lines.
+    func size(_ repo: String, _ index: Int) -> (additions: Int, deletions: Int) {
+        let base = ["acme/infra": 180, "me/app": 40, "me/dotfiles": 6][repo] ?? 20
+        return (base + index * 7 % 50, base / 3 + index * 3 % 20)
+    }
     // Most older PRs merged a few hours to a day and a half after opening; the rest are open, draft or closed.
     let earlier = (0..<40).map { index -> PullRequest in
         let (repo, title) = titles[index % titles.count]
@@ -138,14 +143,15 @@ func renderFixture(to path: String, listOpen: Bool, focusDay: Int? = nil, focusR
         return PullRequest(
             id: "old\(index)", title: title, url: URL(string: "https://github.com/\(repo)/pull/\(index)")!,
             createdAt: createdAt, mergedAt: mergedAt, repository: .init(nameWithOwner: repo), state: state,
-            isDraft: index == 3
+            isDraft: index == 3, additions: size(repo, index).additions, deletions: size(repo, index).deletions
         )
     }
     let today = titles.enumerated().map { index, entry in
         PullRequest(
             id: "today\(index)", title: entry.1, url: URL(string: "https://github.com/\(entry.0)/pull/\(900 + index)")!,
             createdAt: max(startOfToday, now.addingTimeInterval(-TimeInterval(index) * 3_100 - 60)), mergedAt: nil,
-            repository: .init(nameWithOwner: entry.0), state: .open, isDraft: index == 4
+            repository: .init(nameWithOwner: entry.0), state: .open, isDraft: index == 4,
+            additions: size(entry.0, index).additions, deletions: size(entry.0, index).deletions
         )
     }
     let snapshot = MonthSnapshot(

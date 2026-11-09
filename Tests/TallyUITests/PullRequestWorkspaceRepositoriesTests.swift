@@ -63,7 +63,7 @@ import TallyCore
         let host = NSHostingView(rootView: PullRequestList(snapshot: empty, metric: .opened, now: now))
         host.frame = NSRect(x: 0, y: 0, width: 288, height: 420)
         host.layoutSubtreeIfNeeded()
-        let pickers = descendants(of: host).compactMap { $0 as? NSPopUpButton }
+        let pickers = descendants(of: host).compactMap { $0 as? NSPopUpButton }.filter { $0.accessibilityLabel() == "Repository" }
         print("Repository picker titles: \(pickers.map(\.itemTitles))")
         #expect(pickers.count == 1)
         #expect(pickers.first?.itemTitles == ["All repositories (0)"])
@@ -82,7 +82,7 @@ import TallyCore
         for (focus, titles) in cases {
             let (host, window) = await hosted(focus: focus)
             defer { window.orderOut(nil) }
-            let picker = try #require(descendants(of: host).compactMap { $0 as? NSPopUpButton }.first)
+            let picker = try #require(descendants(of: host).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Repository" })
             #expect(picker.itemTitles == titles)
         }
     }
@@ -90,7 +90,7 @@ import TallyCore
     @Test func choosingSwitchingAndClearingRepositoriesKeepsTheSearch() async throws {
         let (host, window) = await hosted()
         defer { window.orderOut(nil) }
-        let picker = try #require(descendants(of: host).compactMap { $0 as? NSPopUpButton }.first)
+        let picker = try #require(descendants(of: host).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Repository" })
         let field = try #require(descendants(of: host).compactMap { $0 as? NSTextField }.first {
             $0.placeholderString?.hasPrefix("Search ") == true
         })
@@ -131,7 +131,7 @@ import TallyCore
     @Test func changingScopeKeepsAnEmptyRepositorySelectedAndLetsItBeCleared() async throws {
         let (host, window) = await hosted(focus: .init(repository: "me/legacy"))
         defer { window.orderOut(nil) }
-        let picker = try #require(descendants(of: host).compactMap { $0 as? NSPopUpButton }.first)
+        let picker = try #require(descendants(of: host).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Repository" })
         let scope = try #require(descendants(of: host).compactMap { $0 as? NSSegmentedControl }.first)
         #expect(picker.titleOfSelectedItem == "me/legacy (1)")
         scope.selectedSegment = 0
@@ -159,7 +159,7 @@ import TallyCore
         window.orderFront(nil)
         defer { window.orderOut(nil) }
         await settle(host)
-        let picker = try #require(descendants(of: host).compactMap { $0 as? NSPopUpButton }.first)
+        let picker = try #require(descendants(of: host).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Repository" })
         #expect(picker.itemTitles == ["All repositories (1)", "\(name) (1)"])
         #expect(picker.frame.width > 0 && picker.frame.width <= 288)
         #expect(picker.cell?.lineBreakMode == .byTruncatingMiddle)

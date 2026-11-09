@@ -100,11 +100,11 @@ extension MonthWindow {
 /// The pull requests that make up the count, each opening on GitHub when clicked.
 struct PullRequestList: View {
     let snapshot: MonthSnapshot
-    let metric: PRMetric
     let now: Date
     private let copyLinkPasteboard: NSPasteboard
     /// The day the day segment shows, kept while the whole month is showing so picking the segment returns to it.
     @State private var day: Int
+    @State private var metric: PRMetric
     @State private var wholeMonth: Bool
     @State private var repository: String?
     @State private var funnel: FunnelPart?
@@ -118,7 +118,7 @@ struct PullRequestList: View {
     ) {
         let metric = focus.listedMetric(goal: metric)
         self.snapshot = snapshot
-        self.metric = metric
+        _metric = State(initialValue: metric)
         self.now = now
         self.copyLinkPasteboard = copyLinkPasteboard
         let scope = PullRequestScope.opening(for: focus, in: snapshot, metric: metric, at: now)
@@ -126,6 +126,14 @@ struct PullRequestList: View {
         _wholeMonth = State(initialValue: scope == .month)
         _repository = State(initialValue: focus.repository)
         _funnel = State(initialValue: focus.funnel)
+    }
+
+    /// Switching keeps the day, repository, status and search, and drops a funnel part the new metric can't match.
+    private var metricSelection: Binding<PRMetric> {
+        Binding(get: { metric }) { newValue in
+            metric = newValue
+            funnel = PullRequestWorkspaceMetric.funnel(funnel, keptFor: newValue)
+        }
     }
 
     private var stepper: PullRequestWorkspaceDayStepper { .init(day: day, in: snapshot.window, at: now) }
@@ -145,8 +153,14 @@ struct PullRequestList: View {
         let scoped = PullRequestWorkspaceStatusFilter.apply(statusChoice, to: inRepository)
         let search = PullRequestWorkspaceSearch(searchText)
         let pullRequests = search.results(in: scoped)
+        let metrics = PullRequestWorkspaceMetric { other in
+            other == metric ? scoped.count : PullRequestWorkspaceStatusFilter.apply(statusChoice, to: snapshot.listedPullRequests(
+                for: other, scope: scope, repository: repository,
+                funnel: PullRequestWorkspaceMetric.funnel(funnel, keptFor: other), at: now
+            )).count
+        }
         VStack(alignment: .leading, spacing: 10) {
-            scopeBar
+            scopeBar(metrics)
             HStack(spacing: 6) {
                 PullRequestWorkspaceRepositoryPicker(repositories: repositories, selection: $repository)
                 if statuses.isOffered {
@@ -249,10 +263,13 @@ struct PullRequestList: View {
     }
 
     /// The day segment names the day it shows, and the arrows beside it step that day, so a day picked from the charts
-    /// needs no filter of its own and its neighbours are a click away.
-    private var scopeBar: some View {
+    /// needs no filter of its own and its neighbours are a click away. The metric leads the row, so it reads as what
+    /// the list holds: "Opened ‹ Today ›".
+    private func scopeBar(_ metrics: PullRequestWorkspaceMetric) -> some View {
         let stepper = stepper
         return HStack(spacing: 2) {
+            PullRequestWorkspaceMetricPicker(metrics: metrics, selection: metricSelection)
+                .padding(.trailing, 4)
             dayArrow(to: stepper.previous, systemImage: "chevron.left", label: "Previous day")
             Picker("Show", selection: $wholeMonth) {
                 Text(stepper.title).tag(false)

@@ -26,7 +26,7 @@ You also get a notification when a refresh takes you past your goal. macOS asks 
 
 When the PR list opens on part of the month (a day from the charts or the goal-hit shortcut, a repo from the top repos, a part of the merge funnel, or the figure your goal doesn't count), a heading above the list names that slice and says what it amounts to:
 
-- For a day: how many PRs it had against an average day so far this month ("4 opened · 2× an average day"). The figure your goal doesn't count opens on today when today has any, and its heading then says so ("Merged today") and describes today's
+- For a day: how many PRs it had against an average day so far this month ("4 opened · 2× an average day"). The figure your goal doesn't count opens on today when today has any, and its heading then says so ("Merged today") and describes today's PRs rather than the month's.
 - Otherwise: its share of the month ("18 of 45 opened this month · 40%")
 - How many of its PRs merged and the median time from opening to merging, plus how many are still open, drafts, or closed without merging
 - How big its PRs run: the median lines changed (added plus deleted), against the month's median when the slice is part of the month ("Median 270 lines changed · 2.6× the month's 103")

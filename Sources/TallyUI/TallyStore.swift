@@ -49,6 +49,7 @@ public final class TallyStore {
             if automaticRefreshPaused {
                 schedule?.cancel()
                 schedule = nil
+                nextTryAt = nil
             } else if started {
                 startSchedule()
             }
@@ -99,7 +100,9 @@ public final class TallyStore {
     /// Refreshes that have failed in a row, and the latest failure, which together set how long the schedule
     /// waits. See `TallyStoreRetry`. Waiting for the network is neither, since its return triggers a refresh.
     private var failedRefreshes = 0
-    private var lastFailure: Error?
+    private(set) var lastFailure: Error?
+    /// When the schedule's current sleep ends, so a failure can say when the next try is. See `retryText(at:)`.
+    private(set) var nextTryAt: Date?
     /// Whether the schedule is asleep waiting out a failure, which a success from anywhere else makes pointless.
     @ObservationIgnored private var sleepingOnFailure = false
     /// How long failures must last before the menu bar fades, shortened in tests.
@@ -219,7 +222,10 @@ public final class TallyStore {
     /// When the numbers were fetched. Restored numbers can be days old, so the date appears once it isn't today.
     public func updatedText(at now: Date = Date()) -> String? {
         let updated = fetchedTime(at: now).map { "Updated \($0)" }
-        guard automaticRefreshPaused else { return updated }
+        guard automaticRefreshPaused else {
+            guard let retry = retryText(at: now) else { return updated }
+            return updated.map { "\($0) · \(retry)" } ?? retry
+        }
         return updated.map { "\($0) · Paused" } ?? "Automatic refresh paused"
     }
 
@@ -282,13 +288,13 @@ public final class TallyStore {
         }
         guard let pace = pace(at: now) else {
             guard menuBarIsStale else { return "PR Tally, loading" }
-            return "PR Tally, not updating" + (fetchedTime(at: now).map { " since \($0)" } ?? "")
+            return "PR Tally, not updating" + (fetchedTime(at: now).map { " since \($0)" } ?? "") + retrySuffix(at: now)
         }
         let todayCount = currentSnapshot(at: now)?.todayCount(for: metric, at: now) ?? 0
         let today = "\(todayCount.formatted()) today\(menuBarBeatsPace(at: now) ? ", beating the daily pace" : "")"
         let label = "\(today). \(pace.count.formatted()) of \(pace.goal.formatted()) \(metric.noun). \(pace.statusText)"
         guard menuBarIsStale, let time = fetchedTime(at: now) else { return label }
-        return "\(label). Not updating since \(time)"
+        return "\(label). Not updating since \(time)" + retrySuffix(at: now)
     }
 
     /// A failed refresh keeps the last good numbers on screen and reports the error next to them.
@@ -486,6 +492,7 @@ public final class TallyStore {
     private func startSchedule() {
         schedule?.cancel()
         sleepingOnFailure = false
+        nextTryAt = nil
         schedule = Task { [weak self] in
             while !Task.isCancelled, let self {
                 await self.refreshIfStale()
@@ -497,6 +504,12 @@ public final class TallyStore {
 
     private func sleepUntilNextTry() async {
         let delay = nextDelay()
+        nextTryAt = clock().addingTimeInterval(delay.timeInterval)
+        await sleep(through: delay)
+        if !Task.isCancelled { nextTryAt = nil }
+    }
+
+    private func sleep(through delay: Duration) async {
         guard errorMessage != nil else { return await sleep(delay) }
         sleepingOnFailure = true
         defer { if !Task.isCancelled { sleepingOnFailure = false } }

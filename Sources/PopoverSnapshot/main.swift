@@ -122,7 +122,8 @@ func renderRollover(to path: String) async throws {
 /// `focusMetric` on the count the goal doesn't follow, as from that figure on the summary.
 @MainActor
 func renderFixture(
-    to path: String, listOpen: Bool, focusDay: Int? = nil, focusRepository: String? = nil, focusMetric: PRMetric? = nil
+    to path: String, listOpen: Bool, focusDay: Int? = nil, focusRepository: String? = nil, focusMetric: PRMetric? = nil,
+    insightExpanded: Bool = false
 ) async throws {
     let now = Date()
     let window = MonthWindow(containing: now)
@@ -167,8 +168,11 @@ func renderFixture(
     let store = TallyStore(defaults: ScratchDefaults(), cache: nil) { snapshot }
     await store.refresh()
     if listOpen { store.screen = .pullRequests }
-    let view = PopoverView(store: store, focusDay: focusDay, focusRepository: focusRepository, focusMetric: focusMetric)
-        .background(Color(nsColor: .windowBackgroundColor))
+    let view = PopoverView(
+        store: store, focusDay: focusDay, focusRepository: focusRepository, focusMetric: focusMetric,
+        insightExpanded: insightExpanded
+    )
+    .background(Color(nsColor: .windowBackgroundColor))
     try writeHosted(view, to: path)
 }
 
@@ -235,6 +239,9 @@ if mode == "milestone" {
     try await renderFixture(to: path, listOpen: true, focusDay: max(0, today - 1))
 } else if mode == "zoom-repo" {
     try await renderFixture(to: path, listOpen: true, focusRepository: "acme/infra")
+} else if mode == "zoom-details" {
+    // The same zoom with its heading opened to every line.
+    try await renderFixture(to: path, listOpen: true, focusRepository: "acme/infra", insightExpanded: true)
 } else if mode == "zoom-metric" {
     // The merged count, as from its figure beside the opened count the goal follows.
     try await renderFixture(to: path, listOpen: true, focusMetric: .merged)
@@ -242,6 +249,6 @@ if mode == "milestone" {
     try await renderPopover(to: path, scheme: mode == "dark" ? .dark : .light)
 } else {
     // Only `light` and `dark` use your real login, so a mistyped fixture mode must not fall through to them.
-    FileHandle.standardError.write(Data("Unknown mode \(mode). Use light, dark, menubar, rollover, drilldown, overview, zoom-day, zoom-repo, zoom-metric or milestone.\n".utf8))
+    FileHandle.standardError.write(Data("Unknown mode \(mode). Use light, dark, menubar, rollover, drilldown, overview, zoom-day, zoom-repo, zoom-details, zoom-metric or milestone.\n".utf8))
     exit(2)
 }

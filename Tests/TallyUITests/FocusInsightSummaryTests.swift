@@ -155,6 +155,47 @@ private func text(_ focus: PullRequestFocus, metric: PRMetric = .opened) -> Focu
         #expect(try line(slice: 3.4, month: [2.6, 1]) == "1 merged in a median 3h · about the month's 3h")
     }
 
+    @Test func sizesThatRoundTheSameReadAsAboutTheMonths() throws {
+        // Small sizes rarely fall within a tenth of each other, so "1.1× the month's 4" would contradict itself.
+        func line(slice: [Int], month: [Int]) throws -> String? {
+            func sized(_ id: String, repo: String, lines: Int) -> PullRequest {
+                PullRequest(
+                    id: id, title: "Fixture", url: URL(string: "https://example.test/\(id)")!, createdAt: date(3, hour: 9),
+                    mergedAt: nil, repository: .init(nameWithOwner: repo), additions: lines, deletions: 0
+                )
+            }
+            let opened = slice.enumerated().map { sized("s\($0.offset)", repo: "x/x", lines: $0.element) }
+                + month.enumerated().map { sized("m\($0.offset)", repo: "me/app", lines: $0.element) }
+            let snapshot = MonthSnapshot(
+                login: "me", window: MonthWindow(containing: now, calendar: calendar), opened: opened, merged: [],
+                totalContributions: 0, fetchedAt: now
+            )
+            let text = try #require(FocusInsightText(snapshot: snapshot, metric: .opened, focus: PullRequestFocus(repository: "x/x"), now: now))
+            return text.lines.first { $0.contains("changed") }
+        }
+        // 2.5 lines beside the month's 3 (2, 3, 3, 3, 4, 4) is under the band, but prints as 3.
+        #expect(try line(slice: [2, 3], month: [3, 3, 4, 4]) == "Median 3 lines changed · about the month's 3")
+        // 4 beside the month's 3.5 (3, 3, 3, 4, 4, 4) is over it, but both print as 4.
+        #expect(try line(slice: [4, 4], month: [3, 3, 3, 4]) == "Median 4 lines changed · about the month's 4")
+        // Sizes that print differently are still compared.
+        #expect(try line(slice: [2, 2], month: [3, 3, 4, 4]) == "Median 2 lines changed · under the month's 3")
+    }
+
+    @Test func aFoldedHeadingKeepsItsFirstLineAndSaysHowManyMoreItHides() throws {
+        let text = try #require(text(PullRequestFocus(day: 2)))
+        #expect(text.shownLines(expanded: false) == ["4 opened · 2× an average day"])
+        #expect(text.disclosure(expanded: false) == "3 more")
+        #expect(text.shownLines(expanded: true) == text.lines)
+        #expect(text.disclosure(expanded: true) == "Less")
+    }
+
+    @Test func aOneLineHeadingHasNothingToFold() throws {
+        let text = try #require(text(PullRequestFocus(day: 0)))
+        #expect(text.shownLines(expanded: false) == ["None opened · an average day has 2"])
+        #expect(text.disclosure(expanded: false) == nil)
+        #expect(text.disclosure(expanded: true) == nil)
+    }
+
     @Test func aSliceWithoutSizesSaysNothingAboutSize() throws {
         #expect(try #require(text(PullRequestFocus(repository: "acme/infra"))).lines.allSatisfy { !$0.contains("lines") })
     }

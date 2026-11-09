@@ -8,19 +8,23 @@ public struct PopoverView: View {
     /// Bumped when the heading steps sideways, so the list reopens on the new slice rather than keeping the old one's
     /// filters.
     @State private var listOpening = 0
+    /// Whether the zoom heading shows all its lines. Kept across steps and openings, since someone who opened it once
+    /// wants it open on the next slice too.
+    @State private var insightExpanded = false
 
     public init(store: TallyStore) {
         self.store = store
     }
 
-    /// Opens on the pull request list zoomed to a zero-based day, a repository or the count the goal doesn't follow, so
-    /// fixtures can render a zoom.
+    /// Opens on the pull request list zoomed to a zero-based day, a repository or the count the goal doesn't follow, with
+    /// its heading folded or open, so fixtures can render a zoom.
     @_spi(Fixtures) public init(
         store: TallyStore, focusDay day: Int? = nil, focusRepository repository: String? = nil,
-        focusMetric metric: PRMetric? = nil
+        focusMetric metric: PRMetric? = nil, insightExpanded: Bool = false
     ) {
         self.store = store
         _listFocus = State(initialValue: PullRequestFocus(day: day, repository: repository, metric: metric))
+        _insightExpanded = State(initialValue: insightExpanded)
     }
 
     public var body: some View {
@@ -29,7 +33,9 @@ public struct PopoverView: View {
             if store.screen == .settings {
                 SettingsView(store: store)
             } else if store.screen == .pullRequests, let snapshot = store.currentSnapshot() {
-                FocusInsightSummary(snapshot: snapshot, metric: store.metric, focus: listFocus, now: Date()) { focus in
+                FocusInsightSummary(
+                    snapshot: snapshot, metric: store.metric, focus: listFocus, now: Date(), expanded: $insightExpanded
+                ) { focus in
                     listFocus = focus
                     listOpening += 1
                 }

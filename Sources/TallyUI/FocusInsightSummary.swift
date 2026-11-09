@@ -2,13 +2,15 @@ import SwiftUI
 import TallyCore
 
 /// Above the pull request list when it opened on a slice of the month: names the slice and says what it amounts to
-/// beside the month, with buttons to step sideways to the slice beside it.
+/// beside the month, with buttons to step sideways to the slice beside it. Folded, it keeps to the slice's first line
+/// so the list starts high in the narrow popover; a button opens the rest.
 struct FocusInsightSummary: View {
     let snapshot: MonthSnapshot
     /// The metric the goal counts; the focus can ask for the other.
     let metric: PRMetric
     let focus: PullRequestFocus
     let now: Date
+    @Binding var expanded: Bool
     var step: (PullRequestFocus) -> Void = { _ in }
 
     var body: some View {
@@ -21,11 +23,21 @@ struct FocusInsightSummary: View {
                         stepButtons(stepper)
                     }
                 }
-                ForEach(text.lines, id: \.self) { Text($0) }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-                    .fixedSize(horizontal: false, vertical: true)
+                ForEach(Array(text.shownLines(expanded: expanded).enumerated()), id: \.element) { index, line in
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(line).fixedSize(horizontal: false, vertical: true)
+                        if index == 0, let disclosure = text.disclosure(expanded: expanded) {
+                            Spacer(minLength: 0)
+                            Button(disclosure) { expanded.toggle() }
+                                .buttonStyle(.borderless)
+                                .fixedSize()
+                                .help(expanded ? "Show only the first line" : "Show the rest of what this slice amounts to")
+                        }
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
             }
             .help(text.help)
         }
@@ -134,8 +146,10 @@ struct FocusInsightText: Equatable {
             if insight.count < insight.monthCount, let month = snapshot.medianLinesChanged(for: metric), month > 0 {
                 let ratio = size / month
                 let monthLines = Int(month.rounded()).formatted()
-                // A ratio under one reads as "0.1×" or worse, "0×", so smaller slices just say so.
-                lines.append("\(median) · " + ((0.9...1.1).contains(ratio) ? "about the month's \(monthLines)"
+                // Sizes that read the same in whole lines are about the same, whatever their ratio. A ratio under one reads
+                // as "0.1×" or worse, "0×", so smaller slices just say so.
+                let same = (0.9...1.1).contains(ratio) || Int(size.rounded()) == Int(month.rounded())
+                lines.append("\(median) · " + (same ? "about the month's \(monthLines)"
                     : ratio < 1 ? "under the month's \(monthLines)"
                     : "\(ratio.formatted(.number.precision(.fractionLength(0...1))))× the month's \(monthLines)"))
             } else {
@@ -157,6 +171,17 @@ struct FocusInsightText: Equatable {
 
         help = "Compared with every PR \(verb) this month. Merge times run from opening to merging; "
             + "open, draft and closed count only PRs whose state GitHub reported. Size is lines added plus deleted."
+    }
+
+    /// The lines a heading shows: all of them open, only the first folded.
+    func shownLines(expanded: Bool) -> [String] {
+        expanded ? lines : Array(lines.prefix(1))
+    }
+
+    /// The button that opens or folds the rest, saying how many lines folding hides, or nil when there's only one.
+    func disclosure(expanded: Bool) -> String? {
+        guard lines.count > 1 else { return nil }
+        return expanded ? "Less" : "\((lines.count - 1).formatted()) more"
     }
 
     /// The help on the other metric's figure, naming the PRs the list will open on: today's when today has any, as

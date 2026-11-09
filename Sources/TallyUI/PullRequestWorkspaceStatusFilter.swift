@@ -10,13 +10,24 @@ struct PullRequestWorkspaceStatusFilter: Equatable {
     enum Choice: Hashable {
         case status(PullRequestWorkspaceStatus.Kind)
         case review(PullRequest.ReviewDecision)
+        case checksFailing
         case unknown
 
         func matches(_ pr: PullRequest) -> Bool {
             switch self {
             case .status(let kind): PullRequestWorkspaceStatus(pr)?.kind == kind
             case .review(let decision): PullRequestWorkspaceReview(pr)?.decision == decision
+            case .checksFailing: PullRequestWorkspaceChecks(pr) != nil
             case .unknown: PullRequestWorkspaceStatus(pr) == nil
+            }
+        }
+
+        /// Whether the menu sets this choice apart from the one above it: review and checks each answer a different
+        /// question from where the PR stands.
+        var startsGroup: Bool {
+            switch self {
+            case .review, .checksFailing: true
+            case .status, .unknown: false
             }
         }
 
@@ -29,6 +40,7 @@ struct PullRequestWorkspaceStatusFilter: Equatable {
             case .review(.reviewRequired): "Needs review"
             case .review(.changesRequested): "Changes requested"
             case .review(.approved): "Approved"
+            case .checksFailing: "CI failing"
             case .unknown: "Status not known yet"
             }
         }
@@ -41,10 +53,11 @@ struct PullRequestWorkspaceStatusFilter: Equatable {
         var title: String { "\(choice.title) (\(count.formatted()))" }
     }
 
-    /// Choices in reading order: where the PR stands, then where review stands, then what isn't known.
+    /// Choices in reading order: where the PR stands, then where review stands, then whether checks fail, then what isn't known.
     static let order: [Choice] = [
         .status(.open), .status(.draft), .status(.merged), .status(.closed),
-        .review(.reviewRequired), .review(.changesRequested), .review(.approved), .unknown,
+        .review(.reviewRequired), .review(.changesRequested), .review(.approved),
+        .checksFailing, .unknown,
     ]
 
     let options: [Option]
@@ -94,8 +107,8 @@ struct PullRequestWorkspaceStatusPicker: NSViewRepresentable {
         picker.addItem(withTitle: "All statuses")
         var previous: PullRequestWorkspaceStatusFilter.Choice?
         for option in filter.options {
-            // Review choices are a different question from state, so they get a rule above them.
-            if case .review = option.choice, !(previous.map(Self.isReview) ?? false) { picker.menu?.addItem(.separator()) }
+            // Review and checks are different questions from state, so each group gets a rule above it.
+            if option.choice.startsGroup, !Self.sameGroup(previous, option.choice) { picker.menu?.addItem(.separator()) }
             picker.addItem(withTitle: option.title)
             picker.lastItem?.representedObject = option.choice
             previous = option.choice
@@ -104,8 +117,8 @@ struct PullRequestWorkspaceStatusPicker: NSViewRepresentable {
         picker.selectItem(at: index ?? 0)
     }
 
-    private static func isReview(_ choice: PullRequestWorkspaceStatusFilter.Choice) -> Bool {
-        if case .review = choice { true } else { false }
+    private static func sameGroup(_ previous: PullRequestWorkspaceStatusFilter.Choice?, _ choice: PullRequestWorkspaceStatusFilter.Choice) -> Bool {
+        if case .review = previous, case .review = choice { true } else { false }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(selection: $selection) }

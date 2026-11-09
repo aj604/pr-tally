@@ -20,6 +20,15 @@ public struct PullRequest: Sendable, Equatable, Decodable, Identifiable {
         case reviewRequired = "REVIEW_REQUIRED"
     }
 
+    /// How the latest commit's checks and statuses stand, in GitHub's words.
+    public enum ChecksState: String, Sendable, Equatable, Decodable {
+        case success = "SUCCESS"
+        case pending = "PENDING"
+        case expected = "EXPECTED"
+        case failure = "FAILURE"
+        case error = "ERROR"
+    }
+
     public let id: String
     public let title: String
     public let url: URL
@@ -34,10 +43,14 @@ public struct PullRequest: Sendable, Equatable, Decodable, Identifiable {
     /// Nil when GitHub reports none: the repository doesn't require reviews, or the snapshot predates this field.
     /// Nil means "no signal", never "approved" or "unreviewed".
     public let reviewDecision: ReviewDecision?
+    /// Nil when the PR has no checks or statuses at all, or the snapshot predates this field, or GitHub used a state
+    /// this app doesn't know. Nil means "no signal", never "passing".
+    public let checks: ChecksState?
 
     public init(
         id: String, title: String, url: URL, createdAt: Date, mergedAt: Date?, repository: Repository,
-        state: State? = nil, isDraft: Bool = false, reviewDecision: ReviewDecision? = nil
+        state: State? = nil, isDraft: Bool = false, reviewDecision: ReviewDecision? = nil,
+        checks: ChecksState? = nil
     ) {
         self.id = id
         self.title = title
@@ -48,10 +61,21 @@ public struct PullRequest: Sendable, Equatable, Decodable, Identifiable {
         self.state = state
         self.isDraft = isDraft
         self.reviewDecision = reviewDecision
+        self.checks = checks
+    }
+
+    private struct ChecksRollup: Decodable {
+        let state: ChecksState?
+
+        init(from decoder: Decoder) throws {
+            state = (try? decoder.container(keyedBy: CodingKeys.self).decodeIfPresent(ChecksState.self, forKey: .state)) ?? nil
+        }
+
+        private enum CodingKeys: String, CodingKey { case state }
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, url, createdAt, mergedAt, repository, state, isDraft, reviewDecision
+        case id, title, url, createdAt, mergedAt, repository, state, isDraft, reviewDecision, statusCheckRollup
     }
 
     public init(from decoder: Decoder) throws {
@@ -67,6 +91,9 @@ public struct PullRequest: Sendable, Equatable, Decodable, Identifiable {
         isDraft = try container.decodeIfPresent(Bool.self, forKey: .isDraft) ?? false
         // Same tolerance as `state`: a decision GitHub adds later reads as no signal.
         reviewDecision = (try? container.decodeIfPresent(ReviewDecision.self, forKey: .reviewDecision)) ?? nil
+        // GitHub nests the state in a rollup object that is null for a PR without checks.
+        let rollup = (try? container.decodeIfPresent(ChecksRollup.self, forKey: .statusCheckRollup)) ?? nil
+        checks = rollup?.state
     }
 }
 

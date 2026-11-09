@@ -240,6 +240,7 @@ public struct GitHubClient: Sendable {
             nodes {
               ... on PullRequest {
                 id title url createdAt mergedAt state isDraft reviewDecision
+                statusCheckRollup { state }
                 repository { nameWithOwner }
               }
             }

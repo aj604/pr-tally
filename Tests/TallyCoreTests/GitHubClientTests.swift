@@ -13,12 +13,13 @@ private let monthStart = utc.date(from: DateComponents(year: 2026, month: 11, da
 
 private func pr(
     _ id: Int, createdAt: Date, mergedAt: Date? = nil, repo: String = "me/app",
-    state: PullRequest.State? = nil, isDraft: Bool = false, review: PullRequest.ReviewDecision? = nil
+    state: PullRequest.State? = nil, isDraft: Bool = false, review: PullRequest.ReviewDecision? = nil,
+    checks: PullRequest.ChecksState? = nil
 ) -> PullRequest {
     PullRequest(
         id: "PR_\(id)", title: "PR \(id)", url: URL(string: "https://github.com/\(repo)/pull/\(id)")!,
         createdAt: createdAt, mergedAt: mergedAt, repository: .init(nameWithOwner: repo), state: state, isDraft: isDraft,
-        reviewDecision: review
+        reviewDecision: review, checks: checks
     )
 }
 
@@ -95,6 +96,8 @@ private final class FakeGitHub: Sendable {
                     "state": pr.state?.rawValue as Any? ?? NSNull(),
                     "isDraft": pr.isDraft,
                     "reviewDecision": pr.reviewDecision?.rawValue as Any? ?? NSNull(),
+                    // GitHub answers null for a PR with no checks, else an object.
+                    "statusCheckRollup": pr.checks.map { ["state": $0.rawValue] } as Any? ?? NSNull(),
                 ] as [String: Any]
             },
         ]
@@ -272,6 +275,58 @@ private func client(_ fake: FakeGitHub, overlap: Overlap) -> GitHubClient {
         let search = queries.value.filter { $0.contains("search(") }
         #expect(!search.isEmpty)
         #expect(search.allSatisfy { $0.contains("reviewDecision") })
+    }
+
+    @Test func carriesEachPullRequestsCheckState() async throws {
+        let prs = [
+            pr(1, createdAt: monthStart, state: .open, checks: .success),
+            pr(2, createdAt: monthStart.addingTimeInterval(60), state: .open, checks: .failure),
+            pr(3, createdAt: monthStart.addingTimeInterval(120), state: .open, checks: .pending),
+            pr(4, createdAt: monthStart.addingTimeInterval(180), state: .open, checks: .error),
+            pr(5, createdAt: monthStart.addingTimeInterval(240), state: .open),
+        ]
+        let snapshot = try await client(FakeGitHub(prs: prs)).fetchSnapshot(at: now, calendar: utc)
+        #expect(snapshot.opened == prs)
+        #expect(snapshot.opened.map(\.checks) == [.success, .failure, .pending, .error, nil])
+    }
+
+    @Test func keepsCheckStatesAcrossSplitSearchesPastTheCap() async throws {
+        let prs = (0..<2500).map {
+            pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 840), state: .open, checks: $0 % 5 == 0 ? .failure : .success)
+        }
+        let snapshot = try await client(FakeGitHub(prs: prs)).fetchSnapshot(at: now, calendar: utc)
+        #expect(snapshot.opened.count == 2500)
+        #expect(snapshot.opened.filter { $0.checks == .failure }.count == 500)
+    }
+
+    @Test func aCheckStateGitHubAddsLaterReadsAsNoSignalAndOldDataHasNone() throws {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        func decode(_ extra: String) throws -> PullRequest {
+            try decoder.decode(PullRequest.self, from: Data(#"""
+            {"id":"PR_1","title":"T","url":"https://github.com/me/app/pull/1","createdAt":"2026-11-01T00:00:00Z",
+             "mergedAt":null,"repository":{"nameWithOwner":"me/app"},"state":"OPEN"\#(extra)}
+            """#.utf8))
+        }
+        #expect(try decode(#","statusCheckRollup":{"state":"FAILURE"}"#).checks == .failure)
+        #expect(try decode(#","statusCheckRollup":{"state":"STALLED"}"#).checks == nil)
+        #expect(try decode(#","statusCheckRollup":null"#).checks == nil)
+        #expect(try decode("").checks == nil)
+        // A rollup the app can't read must not cost the PR its other facts.
+        #expect(try decode(#","statusCheckRollup":"odd""#).state == .open)
+    }
+
+    @Test func asksGitHubForTheCheckRollup() async throws {
+        let queries = Box<[String]>([])
+        let fake = FakeGitHub(prs: [pr(1, createdAt: monthStart, state: .open)])
+        _ = try await GitHubClient { body in
+            let request = try JSONSerialization.jsonObject(with: body) as! [String: Any]
+            queries.value.append(request["query"] as! String)
+            return try fake.respond(to: body)
+        }.fetchSnapshot(at: now, calendar: utc)
+        let search = queries.value.filter { $0.contains("search(") }
+        #expect(!search.isEmpty)
+        #expect(search.allSatisfy { $0.contains("statusCheckRollup { state }") })
     }
 
     @Test func asksGitHubForStateAndDraft() async throws {

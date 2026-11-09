@@ -261,6 +261,7 @@ struct PullRequestList: View {
         let date = (metric == .opened ? pr.createdAt : pr.mergedAt) ?? pr.createdAt
         let status = PullRequestWorkspaceStatus.badge(for: pr, metric: metric)
         let review = PullRequestWorkspaceReview.badge(for: pr, metric: metric)
+        let checks = PullRequestWorkspaceChecks.badge(for: pr, metric: metric)
         return HStack(spacing: 6) {
             Link(destination: pr.url) {
                 VStack(alignment: .leading, spacing: 1) {
@@ -279,6 +280,10 @@ struct PullRequestList: View {
                             Text(review.label).font(.caption2.weight(.medium)).foregroundStyle(review.tint)
                                 .lineLimit(1).fixedSize()
                         }
+                        if let checks {
+                            Text(checks.label).font(.caption2.weight(.medium)).foregroundStyle(checks.tint)
+                                .lineLimit(1).fixedSize()
+                        }
                         Text(snapshot.window.rowTime(date, withDay: scope == .month)).monospacedDigit().lineLimit(1).fixedSize()
                     }
                     .font(.caption)
@@ -291,7 +296,7 @@ struct PullRequestList: View {
             .buttonStyle(.plain)
             .help(pr.title)
             .accessibilityLabel(
-                [pr.title, pr.repository.nameWithOwner, status?.label, review?.label].compactMap { $0 }.joined(separator: ", ")
+                [pr.title, pr.repository.nameWithOwner, status?.label, review?.label, checks?.label].compactMap { $0 }.joined(separator: ", ")
             )
             PullRequestWorkspaceCopyLinkButton(pullRequest: pr, pasteboard: copyLinkPasteboard)
                 .frame(width: 24, height: 24)

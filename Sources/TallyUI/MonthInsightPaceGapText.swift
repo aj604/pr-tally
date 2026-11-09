@@ -26,10 +26,15 @@ struct MonthInsightPaceGapText: Equatable {
     }
 
     /// "1.3×" up to ten times, then a whole number, so "41.7×" doesn't pose as precision.
+    /// Only called for a goal the recent rate does not cover, so `value` is above 1, and above 1.5 for a steep climb.
+    /// It rounds up, never to nearest, so the text cannot read as "1.0×" (covered) for a stretch, or as the stretch
+    /// limit "1.5×" for a steeper climb. The tenth is taken off a hair under the value so 1.4 (which comes out as 1.4000000000000001
+    /// from 4.2 over 3, and 14.000000000000002 once multiplied by ten) doesn't become 1.5. The whole-number format applies to the rounded value, so 9.96 is "10×".
     private static func times(_ value: Double) -> String {
-        let text = value < 10
-            ? value.formatted(.number.precision(.fractionLength(1)))
-            : value.formatted(.number.precision(.fractionLength(0)))
+        let rounded = (value * 10 - 1e-9).rounded(.up) / 10
+        let text = rounded < 10
+            ? rounded.formatted(.number.precision(.fractionLength(1)))
+            : rounded.formatted(.number.precision(.fractionLength(0)))
         return "\(text)×"
     }
 }

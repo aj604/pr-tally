@@ -63,3 +63,26 @@ private func text(goal: Int, perDay: Int) -> MonthInsightPaceGapText {
         #expect(MonthInsightOutlookText(projection: projection, goal: 100).spoken == "Likely finish \(projection.low) to \(projection.high)")
     }
 }
+
+/// With a recent pace of 10 a day, a goal of `100 + 200 * multiple` needs `multiple` times that over the 20 days left.
+@Suite struct MonthInsightPaceGapMultipleRoundingTests {
+    @Test func aStretchJustAboveTheRecentRateIsNotRoundedDownToOne() {
+        // 1.04x: nearest would print "1.0×", which reads as covered.
+        #expect(text(goal: 308, perDay: 10).line == "Recent pace 10.0 a day · needs 1.1× that")
+    }
+
+    @Test func aSteepClimbJustAboveTheStretchLimitIsNotRoundedDownToIt() {
+        // 1.52x: nearest would print "1.5×", the text a stretch at exactly the limit gets.
+        #expect(text(goal: 404, perDay: 10).line == "Recent pace 10.0 a day · needs 1.6× that")
+    }
+
+    @Test func aMultipleThatRoundsUpToTenUsesTheWholeNumberFormat() {
+        // 9.96x: nearest would print "10.0×".
+        #expect(text(goal: 2092, perDay: 10).line == "Recent pace 10.0 a day · needs 10× that")
+    }
+
+    @Test func aMultipleThatIsExactlyOneDecimalIsNotBumpedUp() {
+        // 4.2 needed over 3 recent is 1.4000000000000001, which would round up to 1.5.
+        #expect(text(goal: 114, perDay: 3).line == "Recent pace 3.0 a day · needs 1.4× that")
+    }
+}

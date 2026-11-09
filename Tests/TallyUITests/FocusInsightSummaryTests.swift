@@ -92,6 +92,34 @@ private func text(_ focus: PullRequestFocus, metric: PRMetric = .opened) -> Focu
         #expect(try line(day: 0) == "4 opened · 1.1× an average day's 3.5")
     }
 
+    @Test func daysAreComparedAsTheyStoodWhenTheNumbersWereFetched() throws {
+        func opened(_ id: String, day: Int, hour: Int) -> PullRequest {
+            PullRequest(
+                id: id, title: "Fixture", url: URL(string: "https://example.test/\(id)")!, createdAt: date(day, hour: hour),
+                mergedAt: nil, repository: .init(nameWithOwner: "me/app")
+            )
+        }
+        // Four PRs on each of the 1st, 3rd and 4th, at 8, 2, 6 and 10; two on the 2nd; one at 8 on the 5th.
+        let all = [1, 3, 4].flatMap { day in [8, 14, 18, 22].map { opened("\(day)-\($0)", day: day, hour: $0) } }
+            + [opened("2-8", day: 2, hour: 8), opened("2-14", day: 2, hour: 14), opened("t", day: 5, hour: 8)]
+        func line(day: Int, fetchedAt: Date, now: Date) throws -> String? {
+            // The snapshot holds only what had been opened by the time it was fetched.
+            let snapshot = MonthSnapshot(
+                login: "me", window: MonthWindow(containing: now, calendar: calendar),
+                opened: all.filter { $0.createdAt < fetchedAt }, merged: [], totalContributions: 0, fetchedAt: fetchedAt
+            )
+            return try #require(FocusInsightText(snapshot: snapshot, metric: .opened, focus: PullRequestFocus(day: day), now: now)).lines.first
+        }
+        // Fetched at 9 and still showing at 8 PM: today's one PR is held to 9 AM, not "under an average day's 3 by 8 PM".
+        #expect(try line(day: 4, fetchedAt: date(5, hour: 9), now: date(5, hour: 20))
+            == "1 opened so far · about an average day's 1 by 9:00\u{202F}AM")
+        // Fetched at 9 yesterday: today wasn't counted at all, and yesterday was only counted to 9, so the average is
+        // over the three days before it (3.3), not four with yesterday's one (2.8).
+        let yesterday = date(4, hour: 9)
+        #expect(try line(day: 4, fetchedAt: yesterday, now: date(5, hour: 9)) == "Not counted yet today · last counted Wed 9:00\u{202F}AM")
+        #expect(try line(day: 1, fetchedAt: yesterday, now: date(5, hour: 9)) == "2 opened · under an average day's 3.3")
+    }
+
     @Test func anAverageThatPrintsAsZeroSaysNone() throws {
         func opened(_ id: String, day: Int, minute: Int) -> PullRequest {
             PullRequest(

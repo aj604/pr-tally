@@ -3,7 +3,7 @@ import SwiftUI
 import TallyCore
 @_spi(Fixtures) import TallyUI
 
-// Usage: swift run PopoverSnapshot <output.png> [light|dark|menubar|rollover|drilldown|overview|zoom-day|zoom-repo|zoom-metric|milestone]
+// Usage: swift run PopoverSnapshot <output.png> [light|dark|menubar|rollover|drilldown|overview|zoom-day|zoom-repo|zoom-metric|zoom-stale|milestone]
 @MainActor
 func write(_ view: some View, to path: String) throws {
     let renderer = ImageRenderer(content: view)
@@ -119,13 +119,14 @@ func renderRollover(to path: String) async throws {
 
 /// A busy day in a few repositories, with the pull request list open (or, for `overview`, closed), using no network.
 /// `focusDay` (zero-based) or `focusRepository` opens the list zoomed to it, as from the charts or the top repos, and
-/// `focusMetric` on the count the goal doesn't follow, as from that figure on the summary.
+/// `focusMetric` on the count the goal doesn't follow, as from that figure on the summary. `fetchedAgo` holds the numbers
+/// to how they stood that long ago, as while refresh is paused or offline.
 @MainActor
 func renderFixture(
     to path: String, listOpen: Bool, focusDay: Int? = nil, focusRepository: String? = nil, focusMetric: PRMetric? = nil,
-    insightExpanded: Bool = false
+    insightExpanded: Bool = false, fetchedAgo: TimeInterval = 0
 ) async throws {
-    let now = Date()
+    let now = Date().addingTimeInterval(-fetchedAgo)
     let window = MonthWindow(containing: now)
     let startOfToday = window.calendar.startOfDay(for: now)
     let titles = [
@@ -245,10 +246,14 @@ if mode == "milestone" {
 } else if mode == "zoom-metric" {
     // The merged count, as from its figure beside the opened count the goal follows.
     try await renderFixture(to: path, listOpen: true, focusMetric: .merged)
+} else if mode == "zoom-stale" {
+    // Today, from numbers fetched three hours ago and not refreshed since.
+    let today = MonthWindow(containing: Date()).dayIndex(of: Date()) ?? 0
+    try await renderFixture(to: path, listOpen: true, focusDay: today, fetchedAgo: 3 * 3_600)
 } else if mode == "light" || mode == "dark" {
     try await renderPopover(to: path, scheme: mode == "dark" ? .dark : .light)
 } else {
     // Only `light` and `dark` use your real login, so a mistyped fixture mode must not fall through to them.
-    FileHandle.standardError.write(Data("Unknown mode \(mode). Use light, dark, menubar, rollover, drilldown, overview, zoom-day, zoom-repo, zoom-details, zoom-metric or milestone.\n".utf8))
+    FileHandle.standardError.write(Data("Unknown mode \(mode). Use light, dark, menubar, rollover, drilldown, overview, zoom-day, zoom-repo, zoom-details, zoom-metric, zoom-stale or milestone.\n".utf8))
     exit(2)
 }

@@ -67,9 +67,9 @@ struct FocusInsightSummary: View {
 
 /// The words for a slice: a title saying where the list is zoomed to, then what the slice amounts to, how fast its PRs
 /// merged and how big they run beside the month's, how the rest stand and how long the open ones have waited, and
-/// where they are. The slice is the one the
-/// list opens on, so the other metric's figure, which opens the list on today when today has any, is described as today
-/// rather than the month. Nil for the unfocused list, which is the whole month the summary already describes.
+/// where they are. Days are compared as they stood when the numbers were fetched. The slice is the one the list opens
+/// on, so the other metric's figure, which opens the list on today when today has any, is described as today rather
+/// than the month. Nil for the unfocused list, which is the whole month the summary already describes.
 struct FocusInsightText: Equatable {
     let title: String
     let lines: [String]
@@ -106,11 +106,17 @@ struct FocusInsightText: Equatable {
         var lines: [String] = []
         // Today is still under way, so it's held to what the finished days had by this time rather than their whole.
         let underWay = day != nil && day == today
-        let average = underWay ? snapshot.averageByTimeOfDay(for: metric, at: now)
-            : day != nil ? snapshot.averagePerFinishedDay(for: metric, at: now) : nil
-        if let average, average > 0 || underWay {
+        // The counts stop when the numbers were fetched, which is well before now while refresh is paused or offline,
+        // so the days are compared as they stood then: today's count by the time it was taken, not by now.
+        let counted = min(now, snapshot.fetchedAt)
+        let average = underWay ? snapshot.averageByTimeOfDay(for: metric, at: counted)
+            : day != nil ? snapshot.averagePerFinishedDay(for: metric, at: counted) : nil
+        if underWay, window.dayIndex(of: counted) != today {
+            // Fetched before today began, so today's count isn't known: none on the list doesn't mean none opened.
+            lines.append("Not counted yet today · last counted \(Self.countedTime(counted, in: window))")
+        } else if let average, average > 0 || underWay {
             let size = (insight.count == 0 ? "None \(verb)" : "\(insight.count.formatted()) \(verb)") + (underWay ? " so far" : "")
-            let by = underWay ? " by \(Self.clockTime(now, in: window))" : ""
+            let by = underWay ? " by \(Self.clockTime(counted, in: window))" : ""
             // Compared as printed, to a tenth, so the line never reads "28× an average day's 0" or "9×" a printed 0.2.
             let printed = (average * 10).rounded() / 10
             let figure = printed.formatted(.number.precision(.fractionLength(0...1)))
@@ -215,6 +221,13 @@ struct FocusInsightText: Equatable {
     /// The time of day in the zone the month was counted in, as in "by 9:30 AM".
     static func clockTime(_ date: Date, in window: MonthWindow) -> String {
         var style = Date.FormatStyle.dateTime.hour().minute()
+        style.timeZone = window.calendar.timeZone
+        return date.formatted(style)
+    }
+
+    /// When the numbers were last counted, by weekday and time in the zone the month was counted in, as in "Mon 6:10 PM".
+    static func countedTime(_ date: Date, in window: MonthWindow) -> String {
+        var style = Date.FormatStyle.dateTime.weekday(.abbreviated).hour().minute()
         style.timeZone = window.calendar.timeZone
         return date.formatted(style)
     }

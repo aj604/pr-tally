@@ -88,6 +88,13 @@ extension MonthWindow {
         style.timeZone = calendar.timeZone
         return date.formatted(style)
     }
+
+    /// The month's short name, in the zone the month was counted in.
+    var monthTitle: String {
+        var style = Date.FormatStyle.dateTime.month(.abbreviated)
+        style.timeZone = calendar.timeZone
+        return start.formatted(style)
+    }
 }
 
 /// The pull requests that make up the count, each opening on GitHub when clicked.

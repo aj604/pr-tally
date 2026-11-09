@@ -49,6 +49,7 @@ public final class TallyStore {
             if automaticRefreshPaused {
                 schedule?.cancel()
                 schedule = nil
+                nextTryAt = nil
             } else if started {
                 startSchedule()
             }
@@ -86,7 +87,7 @@ public final class TallyStore {
     private let notify: (@MainActor (Milestone) -> Void)?
     private let network: NetworkStatus
     /// Assumed until the system says otherwise, so a launch doesn't wait on it.
-    private var isOnline = true
+    private(set) var isOnline = true
     /// Whether a refresh was due while offline, which the network coming back then makes up for.
     private var missedRefresh = false
     /// Counts the network coming back, so a fetch that failed while it did is tried again.
@@ -96,6 +97,16 @@ public final class TallyStore {
     private var stalledAt: Date?
     /// When the refreshes since the last good one started failing or waiting for the network.
     private var stalledSince: Date?
+    /// Refreshes that have failed in a row, and the latest failure, which together set how long the schedule
+    /// waits. See `TallyStoreRetry`. Waiting for the network is neither, since its return triggers a refresh.
+    private var failedRefreshes = 0
+    private(set) var lastFailure: Error?
+    /// When the schedule's current sleep ends, so a failure can say when the next try is. See `retryText(at:)`.
+    private(set) var nextTryAt: Date?
+    /// Whether the schedule is asleep waiting out a failure, which a success from anywhere else makes pointless.
+    @ObservationIgnored private var sleepingOnFailure = false
+    /// How long failures must last before the menu bar fades, shortened in tests.
+    @ObservationIgnored var staleGrace: TimeInterval = 120
     /// Read for the time of a failed or waiting refresh, so tests can let minutes of retries pass.
     @ObservationIgnored var clock: () -> Date = Date.init
     /// How long the schedule waits to retry a failure, shortened in tests.
@@ -211,7 +222,10 @@ public final class TallyStore {
     /// When the numbers were fetched. Restored numbers can be days old, so the date appears once it isn't today.
     public func updatedText(at now: Date = Date()) -> String? {
         let updated = fetchedTime(at: now).map { "Updated \($0)" }
-        guard automaticRefreshPaused else { return updated }
+        guard automaticRefreshPaused else {
+            guard let retry = retryText(at: now) else { return updated }
+            return updated.map { "\($0) · \(retry)" } ?? retry
+        }
         return updated.map { "\($0) · Paused" } ?? "Automatic refresh paused"
     }
 
@@ -256,9 +270,9 @@ public final class TallyStore {
     /// With no numbers for this month, the "–" fades the same way, so a first launch that can't sign in, or a new
     /// month that can't be fetched, doesn't look like loading for good.
     public var menuBarIsStale: Bool {
-        guard let stalledAt, let stalledSince, stalledAt.timeIntervalSince(stalledSince) >= 120 else { return false }
+        guard let stalledAt, let stalledSince, stalledAt.timeIntervalSince(stalledSince) >= staleGrace else { return false }
         guard let fetchedAt = currentSnapshot()?.fetchedAt else { return true }
-        return stalledAt.timeIntervalSince(fetchedAt) >= Double(refreshMinutes * 60 + 120)
+        return stalledAt.timeIntervalSince(fetchedAt) >= Double(refreshMinutes * 60) + staleGrace
     }
 
     /// What VoiceOver reads for the menu bar item, since the image carries the numbers visually.
@@ -274,13 +288,13 @@ public final class TallyStore {
         }
         guard let pace = pace(at: now) else {
             guard menuBarIsStale else { return "PR Tally, loading" }
-            return "PR Tally, not updating" + (fetchedTime(at: now).map { " since \($0)" } ?? "")
+            return "PR Tally, not updating" + (fetchedTime(at: now).map { " since \($0)" } ?? "") + retrySuffix(at: now)
         }
         let todayCount = currentSnapshot(at: now)?.todayCount(for: metric, at: now) ?? 0
         let today = "\(todayCount.formatted()) today\(menuBarBeatsPace(at: now) ? ", beating the daily pace" : "")"
         let label = "\(today). \(pace.count.formatted()) of \(pace.goal.formatted()) \(metric.noun). \(pace.statusText)"
         guard menuBarIsStale, let time = fetchedTime(at: now) else { return label }
-        return "\(label). Not updating since \(time)"
+        return "\(label). Not updating since \(time)" + retrySuffix(at: now)
     }
 
     /// A failed refresh keeps the last good numbers on screen and reports the error next to them.
@@ -301,10 +315,17 @@ public final class TallyStore {
             errorMessage = nil
             stalledAt = nil
             stalledSince = nil
+            failedRefreshes = 0
+            lastFailure = nil
+            // The wait was for a failure that is over, such as a rate limit lifted by a new token. Without this the
+            // next automatic refresh could be an hour away.
+            if sleepingOnFailure, schedule != nil { startSchedule() }
             cache?.save(fetched)
             announceGoal(from: previous, to: fetched)
         } catch {
             errorMessage = error.localizedDescription
+            failedRefreshes += 1
+            lastFailure = error
             stalled()
         }
         isRefreshing = false
@@ -316,19 +337,24 @@ public final class TallyStore {
         if !automaticRefreshPaused, dayChanges != dayChangesAtStart || failedBeforeNetworkReturned { await refresh() }
     }
 
-    /// Tells the user once when the goal is reached, rather than on every refresh that finds it reached. A goal
-    /// raised after reaching it, or reached in the other metric, is a new one and is announced in turn.
+    /// Tells the user once when a goal is reached, rather than on every refresh that finds it reached. Both
+    /// metrics keep their own goal, so each is watched whichever one the popover is showing. A goal raised after
+    /// reaching it is a new one and is announced in turn.
     private func announceGoal(from previous: MonthSnapshot?, to fetched: MonthSnapshot) {
         let month = fetched.window.monthKey
-        let announced = "\(month) \(metric.rawValue) \(goal)"
         // Earlier months' goals are let go as this month's are recorded.
-        let thisMonth = (defaults.stringArray(forKey: Keys.goalAnnounced) ?? []).filter { $0.hasPrefix("\(month) ") }
-        guard let milestone = Milestone.goalReached(from: previous, to: fetched, metric: metric, goal: goal, at: Date()),
-            !thisMonth.contains(announced)
-        else { return }
+        var announcedGoals = (defaults.stringArray(forKey: Keys.goalAnnounced) ?? []).filter { $0.hasPrefix("\(month) ") }
+        for metric in PRMetric.allCases {
+            let goal = metric == self.metric ? goal : defaults.integer(forKey: Keys.goalForMetric(metric))
+            let announced = "\(month) \(metric.rawValue) \(goal)"
+            guard let milestone = Milestone.goalReached(from: previous, to: fetched, metric: metric, goal: goal, at: Date()),
+                !announcedGoals.contains(announced)
+            else { continue }
+            announcedGoals.append(announced)
+            if notifiesOnGoal { notify?(milestone) }
+        }
         // Recorded even with notifications off, so turning them on later doesn't announce a crossing from days ago.
-        defaults.set(thisMonth + [announced], forKey: Keys.goalAnnounced)
-        if notifiesOnGoal { notify?(milestone) }
+        defaults.set(announcedGoals, forKey: Keys.goalAnnounced)
     }
 
     /// Today's numbers and possibly the month just changed, whether or not GitHub can be reached.
@@ -361,6 +387,9 @@ public final class TallyStore {
     private func waitForNetwork() {
         missedRefresh = true
         errorMessage = Self.offlineMessage
+        // Reconnecting refreshes at once, so offline polling stays at the base delay however long the last failures ran.
+        failedRefreshes = 0
+        lastFailure = nil
         stalled()
     }
 
@@ -451,16 +480,54 @@ public final class TallyStore {
         }
     }
 
+    /// A normal interval after success. After a failure, soon at first, since the network is often just coming
+    /// back, then less often while it lasts; see `TallyStoreRetry`.
+    func nextDelay() -> Duration {
+        let interval = Duration.seconds(refreshMinutes * 60)
+        guard errorMessage != nil else { return interval }
+        return TallyStoreRetry.delay(
+            afterFailures: failedRefreshes, error: lastFailure, base: retryDelay, interval: interval, now: clock())
+    }
+
     private func startSchedule() {
         schedule?.cancel()
+        sleepingOnFailure = false
+        nextTryAt = nil
         schedule = Task { [weak self] in
             while !Task.isCancelled, let self {
                 await self.refreshIfStale()
                 await self.refreshSettled()
-                // Retry failures soon; the network is often just coming back.
-                let delay: Duration = self.errorMessage == nil ? .seconds(self.refreshMinutes * 60) : self.retryDelay
-                try? await Task.sleep(for: delay, clock: .suspending)
+                await self.sleepUntilNextTry()
             }
         }
+    }
+
+    private func sleepUntilNextTry() async {
+        let delay = nextDelay()
+        nextTryAt = clock().addingTimeInterval(delay.timeInterval)
+        await sleep(through: delay)
+        if !Task.isCancelled { nextTryAt = nil }
+    }
+
+    private func sleep(through delay: Duration) async {
+        guard errorMessage != nil else { return await sleep(delay) }
+        sleepingOnFailure = true
+        defer { if !Task.isCancelled { sleepingOnFailure = false } }
+        // A long wait, such as a rate limit's, would otherwise leave the menu bar unfaded until it ended: it fades
+        // only when a failure is recorded after the grace period. So the wait is split to record one then.
+        if let stalledSince {
+            let untilStale = Duration.seconds(max(0, stalledSince.addingTimeInterval(staleGrace).timeIntervalSince(clock())))
+            if untilStale > .zero, untilStale < delay {
+                await sleep(untilStale)
+                guard !Task.isCancelled else { return }
+                stalled()
+                return await sleep(delay - untilStale)
+            }
+        }
+        await sleep(delay)
+    }
+
+    private func sleep(_ duration: Duration) async {
+        try? await Task.sleep(for: duration, clock: .suspending)
     }
 }

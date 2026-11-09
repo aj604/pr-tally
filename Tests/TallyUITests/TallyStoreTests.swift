@@ -1128,6 +1128,66 @@ private let october31 = Calendar.current.date(from: DateComponents(year: 2026, m
         #expect(sent.milestones.count == 2)
     }
 
+    @Test func aGoalInTheMetricNotShownIsAnnouncedWithoutSwitchingToIt() async {
+        let sent = Sent()
+        let script = Script([
+            .success(snapshot(opened: 1, merged: 1)), .success(snapshot(opened: 1, merged: 2)),
+            .success(snapshot(opened: 1, merged: 3)),
+        ])
+        let store = TallyStore(defaults: freshDefaults(), notify: { sent.milestones.append($0) }) {
+            try await script.next()
+        }
+        store.metric = .merged
+        store.goal = 2
+        store.metric = .opened  // The popover stays on opened, with its own goal of 1,000.
+        await store.refresh()
+        await store.refresh()
+        #expect(sent.milestones.count == 1)
+        #expect(sent.milestones.first?.body.hasPrefix("2 PRs merged in ") == true)
+        await store.refresh()
+        // Looking at merged afterwards finds its goal already announced.
+        store.metric = .merged
+        await store.refresh()
+        #expect(sent.milestones.count == 1)
+    }
+
+    @Test func bothGoalsReachedByOneRefreshAreAnnouncedSeparately() async {
+        let sent = Sent()
+        let script = Script([.success(snapshot(opened: 1, merged: 1)), .success(snapshot(opened: 2, merged: 2))])
+        let store = TallyStore(defaults: freshDefaults(), notify: { sent.milestones.append($0) }) {
+            try await script.next()
+        }
+        store.goal = 2
+        store.metric = .merged
+        store.goal = 2
+        await store.refresh()
+        await store.refresh()
+        #expect(sent.milestones.count == 2)
+        #expect(sent.milestones.contains { $0.body.hasPrefix("2 PRs opened in ") })
+        #expect(sent.milestones.contains { $0.body.hasPrefix("2 PRs merged in ") })
+    }
+
+    @Test func aGoalInTheMetricNotShownCrossedWithNotificationsOffStaysQuietAfterTheyReturn() async {
+        let sent = Sent()
+        let script = Script([
+            .success(snapshot(opened: 1, merged: 1)), .success(snapshot(opened: 1, merged: 2)),
+            .success(snapshot(opened: 1, merged: 1)), .success(snapshot(opened: 1, merged: 2)),
+        ])
+        let store = TallyStore(defaults: freshDefaults(), notify: { sent.milestones.append($0) }) {
+            try await script.next()
+        }
+        store.metric = .merged
+        store.goal = 2
+        store.metric = .opened
+        store.notifiesOnGoal = false
+        await store.refresh()
+        await store.refresh()  // Crosses while off.
+        store.notifiesOnGoal = true
+        await store.refresh()
+        await store.refresh()  // Dips and returns.
+        #expect(sent.milestones.isEmpty)
+    }
+
     @Test func everyGoalAnnouncedThisMonthStaysAnnounced() async {
         let sent = Sent()
         let script = Script([

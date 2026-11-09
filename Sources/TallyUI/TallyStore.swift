@@ -316,19 +316,24 @@ public final class TallyStore {
         if !automaticRefreshPaused, dayChanges != dayChangesAtStart || failedBeforeNetworkReturned { await refresh() }
     }
 
-    /// Tells the user once when the goal is reached, rather than on every refresh that finds it reached. A goal
-    /// raised after reaching it, or reached in the other metric, is a new one and is announced in turn.
+    /// Tells the user once when a goal is reached, rather than on every refresh that finds it reached. Both
+    /// metrics keep their own goal, so each is watched whichever one the popover is showing. A goal raised after
+    /// reaching it is a new one and is announced in turn.
     private func announceGoal(from previous: MonthSnapshot?, to fetched: MonthSnapshot) {
         let month = fetched.window.monthKey
-        let announced = "\(month) \(metric.rawValue) \(goal)"
         // Earlier months' goals are let go as this month's are recorded.
-        let thisMonth = (defaults.stringArray(forKey: Keys.goalAnnounced) ?? []).filter { $0.hasPrefix("\(month) ") }
-        guard let milestone = Milestone.goalReached(from: previous, to: fetched, metric: metric, goal: goal, at: Date()),
-            !thisMonth.contains(announced)
-        else { return }
+        var announcedGoals = (defaults.stringArray(forKey: Keys.goalAnnounced) ?? []).filter { $0.hasPrefix("\(month) ") }
+        for metric in PRMetric.allCases {
+            let goal = metric == self.metric ? goal : defaults.integer(forKey: Keys.goalForMetric(metric))
+            let announced = "\(month) \(metric.rawValue) \(goal)"
+            guard let milestone = Milestone.goalReached(from: previous, to: fetched, metric: metric, goal: goal, at: Date()),
+                !announcedGoals.contains(announced)
+            else { continue }
+            announcedGoals.append(announced)
+            if notifiesOnGoal { notify?(milestone) }
+        }
         // Recorded even with notifications off, so turning them on later doesn't announce a crossing from days ago.
-        defaults.set(thisMonth + [announced], forKey: Keys.goalAnnounced)
-        if notifiesOnGoal { notify?(milestone) }
+        defaults.set(announcedGoals, forKey: Keys.goalAnnounced)
     }
 
     /// Today's numbers and possibly the month just changed, whether or not GitHub can be reached.

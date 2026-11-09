@@ -316,7 +316,9 @@ struct PullRequestList: View {
 
     private func row(_ pr: PullRequest) -> some View {
         let date = (metric == .opened ? pr.createdAt : pr.mergedAt) ?? pr.createdAt
-        let status = PullRequestWorkspaceStatus.badge(for: pr, metric: metric)
+        let mergeTime = PullRequestWorkspaceMergeTime(pr)
+        // A merge time already says the PR merged, so it takes the status label's place rather than sitting beside it.
+        let status = mergeTime == nil ? PullRequestWorkspaceStatus.badge(for: pr, metric: metric) : nil
         let review = PullRequestWorkspaceReview.badge(for: pr, metric: metric)
         let checks = PullRequestWorkspaceChecks.badge(for: pr, metric: metric)
         return HStack(spacing: 6) {
@@ -332,6 +334,11 @@ struct PullRequestList: View {
                         if let status {
                             Text(status.label).font(.caption2.weight(.medium)).foregroundStyle(status.tint)
                                 .lineLimit(1).fixedSize()
+                        }
+                        if let mergeTime {
+                            Text(mergeTime.label).font(.caption2.weight(.medium)).foregroundStyle(mergeTime.tint)
+                                .lineLimit(1).fixedSize()
+                                .accessibilityLabel(mergeTime.accessibilityLabel)
                         }
                         if let review {
                             Text(review.label).font(.caption2.weight(.medium)).foregroundStyle(review.tint)
@@ -353,7 +360,7 @@ struct PullRequestList: View {
             .buttonStyle(.plain)
             .help(pr.title)
             .accessibilityLabel(
-                [pr.title, pr.repository.nameWithOwner, status?.label, review?.label, checks?.label].compactMap { $0 }.joined(separator: ", ")
+                [pr.title, pr.repository.nameWithOwner, status?.label, mergeTime?.accessibilityLabel, review?.label, checks?.label].compactMap { $0 }.joined(separator: ", ")
             )
             PullRequestWorkspaceCopyLinkButton(pullRequest: pr, pasteboard: copyLinkPasteboard)
                 .frame(width: 24, height: 24)

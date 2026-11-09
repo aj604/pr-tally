@@ -153,6 +153,8 @@ struct PullRequestList: View {
                 PullRequestWorkspaceRepositoryPicker(repositories: repositories, selection: $repository)
                 if statuses.isOffered {
                     PullRequestWorkspaceStatusPicker(filter: statuses, selection: $statusChoice)
+                        // Capped so the repository picker keeps room for a readable name; the menu lists full titles.
+                        .frame(maxWidth: 128)
                 }
             }
             filters

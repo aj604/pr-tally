@@ -79,7 +79,8 @@ struct PullRequestWorkspaceStatusPicker: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSPopUpButton {
         let picker = NSPopUpButton(frame: .zero, pullsDown: false)
-        picker.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+        picker.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        picker.cell?.lineBreakMode = .byTruncatingTail
         picker.setAccessibilityLabel("Status")
         picker.toolTip = "Filter this list by status or review"
         picker.target = context.coordinator

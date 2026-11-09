@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import TallyCore
 
 /// The day the list's day segment shows and the days either side of it, so a neighbouring day is one click instead of
@@ -36,5 +37,27 @@ struct PullRequestWorkspaceDayStepper: Equatable {
     static func openingDay(for scope: PullRequestScope, in window: MonthWindow, at now: Date) -> Int {
         if case .day(let day) = scope { return day }
         return window.dayIndex(of: now) ?? window.dayCount - 1
+    }
+
+    /// A step to the day before or after. Each has a shortcut, so a run of days reads without reaching for the arrows.
+    /// ⌘[ and ⌘] are the usual back and forward, and unlike ⌘← and ⌘→ they don't move the cursor in the search field,
+    /// so they step the day even while typing a search.
+    enum Step {
+        case previous, next
+
+        var key: KeyEquivalent { self == .previous ? "[" : "]" }
+
+        var label: String { self == .previous ? "Previous day" : "Next day" }
+
+        var systemImage: String { self == .previous ? "chevron.left" : "chevron.right" }
+
+        func target(of stepper: PullRequestWorkspaceDayStepper) -> Day? {
+            self == .previous ? stepper.previous : stepper.next
+        }
+
+        /// The tooltip names the day the arrow steps to and the shortcut that does the same.
+        func help(to target: Day?) -> String {
+            "\(target.map { "Show \($0.title)" } ?? label) (⌘\(key.character))"
+        }
     }
 }

@@ -272,28 +272,31 @@ struct PullRequestList: View {
         return HStack(spacing: 2) {
             PullRequestWorkspaceMetricPicker(metrics: metrics, selection: metricSelection)
                 .padding(.trailing, 4)
-            dayArrow(to: stepper.previous, systemImage: "chevron.left", label: "Previous day")
+            dayArrow(to: stepper.previous, step: .previous)
             Picker("Show", selection: $wholeMonth) {
                 Text(stepper.title).tag(false)
                 Text("This month").tag(true)
             }
             .labelsHidden()
             .pickerStyle(.segmented)
-            dayArrow(to: stepper.next, systemImage: "chevron.right", label: "Next day")
+            dayArrow(to: stepper.next, step: .next)
         }
     }
 
-    /// Stepping works on the day segment, so the arrows rest while the whole month is showing.
-    private func dayArrow(to target: PullRequestWorkspaceDayStepper.Day?, systemImage: String, label: String) -> some View {
+    /// Stepping works on the day segment, so the arrows rest while the whole month is showing, and their shortcuts
+    /// with them. The step is worked out from the day showing when pressed: a shortcut can run the action from an
+    /// earlier render, whose target is the day it already stepped to.
+    private func dayArrow(to target: PullRequestWorkspaceDayStepper.Day?, step: PullRequestWorkspaceDayStepper.Step) -> some View {
         Button {
-            if let target { day = target.day }
+            if let next = step.target(of: stepper) { day = next.day }
         } label: {
-            Image(systemName: systemImage).frame(width: 18, height: 22).contentShape(Rectangle())
+            Image(systemName: step.systemImage).frame(width: 18, height: 22).contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
+        .keyboardShortcut(step.key, modifiers: .command)
         .disabled(wholeMonth || target == nil)
-        .help(target.map { "Show \($0.title)" } ?? label)
-        .accessibilityLabel(label)
+        .help(step.help(to: target))
+        .accessibilityLabel(step.label)
         .accessibilityValue(target?.title ?? "")
     }
 

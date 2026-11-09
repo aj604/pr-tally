@@ -111,12 +111,14 @@ struct FocusInsightText: Equatable {
         if let average, average > 0 || underWay {
             let size = (insight.count == 0 ? "None \(verb)" : "\(insight.count.formatted()) \(verb)") + (underWay ? " so far" : "")
             let by = underWay ? " by \(Self.clockTime(now, in: window))" : ""
-            let figure = average.formatted(.number.precision(.fractionLength(0...1)))
-            let ratio = average > 0 ? Double(insight.count) / average : 0
+            // Compared as printed, to a tenth, so the line never reads "28× an average day's 0" or "9×" a printed 0.2.
+            let printed = (average * 10).rounded() / 10
+            let figure = printed.formatted(.number.precision(.fractionLength(0...1)))
+            let ratio = printed > 0 ? Double(insight.count) / printed : 0
             // In the words the size and merge lines use, since "0.5× an average day" reads worse than "under" one.
-            let compared = insight.count == 0 || average == 0
-                ? "an average day has \(average == 0 ? "none" : figure)\(by)"
-                : (0.9...1.1).contains(ratio) ? "about an average day's \(figure)\(by)"
+            let compared = insight.count == 0 || printed == 0
+                ? "an average day has \(printed == 0 ? "none" : figure)\(by)"
+                : (0.9...1.1).contains(ratio) || Double(insight.count) == printed ? "about an average day's \(figure)\(by)"
                 : ratio < 1 ? "under an average day's \(figure)\(by)"
                 : "\(ratio.formatted(.number.precision(.fractionLength(0...1))))× an average day's \(figure)\(by)"
             lines.append("\(size) · \(compared)")

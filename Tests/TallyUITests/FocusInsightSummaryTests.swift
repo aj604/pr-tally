@@ -92,6 +92,27 @@ private func text(_ focus: PullRequestFocus, metric: PRMetric = .opened) -> Focu
         #expect(try line(day: 0) == "4 opened · 1.1× an average day's 3.5")
     }
 
+    @Test func anAverageThatPrintsAsZeroSaysNone() throws {
+        func opened(_ id: String, day: Int, minute: Int) -> PullRequest {
+            PullRequest(
+                id: id, title: "Fixture", url: URL(string: "https://example.test/\(id)")!,
+                createdAt: date(day).addingTimeInterval(Double(minute) * 60), mergedAt: nil, repository: .init(nameWithOwner: "me/app")
+            )
+        }
+        // One PR by 12:30 AM over 28 finished days averages 0.04, which prints as 0.
+        let now = date(29).addingTimeInterval(30 * 60)
+        func line(_ prs: [PullRequest]) throws -> String? {
+            let snapshot = MonthSnapshot(
+                login: "me", window: MonthWindow(containing: now, calendar: calendar), opened: prs, merged: [],
+                totalContributions: 0, fetchedAt: now
+            )
+            return try #require(FocusInsightText(snapshot: snapshot, metric: .opened, focus: PullRequestFocus(day: 28), now: now)).lines.first
+        }
+        #expect(try line([opened("a", day: 1, minute: 10), opened("t", day: 29, minute: 5)])
+            == "1 opened so far · an average day has none by 12:30\u{202F}AM")
+        #expect(try line([opened("a", day: 1, minute: 10)]) == "None opened so far · an average day has none by 12:30\u{202F}AM")
+    }
+
     @Test func aQuietMorningSaysAnAverageDayHadNoneByNow() throws {
         // Every PR so far was opened at 9 AM, so at 8 an average day has had none.
         let early = date(10, hour: 8)
@@ -125,7 +146,7 @@ private func text(_ focus: PullRequestFocus, metric: PRMetric = .opened) -> Focu
         )
         let text = try #require(FocusInsightText(snapshot: busy, metric: .opened, focus: PullRequestFocus(metric: .merged), now: now))
         #expect(text.title == "Merged today")
-        #expect(text.lines == ["2 merged so far · 9× an average day's 0.2 by 12:00\u{202F}PM", "Merged in a median 2h · faster than the month's 3h", "All in me/app"])
+        #expect(text.lines == ["2 merged so far · 10× an average day's 0.2 by 12:00\u{202F}PM", "Merged in a median 2h · faster than the month's 3h", "All in me/app"])
         #expect(FocusInsightText.otherMetricHelp(snapshot: busy, metric: .opened, now: now) == "List the 2 PRs merged today")
         #expect(FocusInsightText.otherMetricHelp(snapshot: snapshot, metric: .opened, now: now) == "List the 3 PRs merged")
     }

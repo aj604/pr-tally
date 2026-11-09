@@ -57,6 +57,24 @@ private func pr(
         #expect(insight.medianTimeToMerge == TimeInterval(2 * 3_600))
     }
 
+    @Test func theOldestOpenIsTheEarliestOpenedThatIsOpenAndNotADraft() {
+        func opened(_ id: String, day: Int, state: PullRequest.State? = .open, isDraft: Bool = false) -> PullRequest {
+            PullRequest(
+                id: id, title: "Fixture", url: URL(string: "https://example.test/\(id)")!, createdAt: date(day),
+                mergedAt: nil, repository: .init(nameWithOwner: "me/app"), state: state, isDraft: isDraft
+            )
+        }
+        let insight = FocusInsight(
+            pullRequests: [
+                opened("newer", day: 6), opened("older", day: 4), opened("draft", day: 1, isDraft: true),
+                opened("closed", day: 1, state: .closed), opened("unknown", day: 1, state: nil),
+            ],
+            monthCount: 5
+        )
+        #expect(insight.oldestOpenSince == date(4))
+        #expect(FocusInsight(pullRequests: [opened("draft", day: 1, isDraft: true)], monthCount: 1).oldestOpenSince == nil)
+    }
+
     @Test func theMedianSizeSkipsPullRequestsWhoseSizeIsUnknown() {
         let odd = FocusInsight(pullRequests: [pr("a", lines: 10), pr("b", lines: 400), pr("c", lines: 40), pr("d")], monthCount: 4)
         #expect(odd.medianLinesChanged == 40)

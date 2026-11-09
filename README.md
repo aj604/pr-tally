@@ -28,7 +28,7 @@ When the PR list opens on part of the month (a day from the charts or the goal-h
 
 - For a day: how many PRs it had against an average day so far this month ("4 opened · 2× an average day"). The figure your goal doesn't count opens on today when today has any, and its heading then says so ("Merged today") and describes today's PRs rather than the month's.
 - Otherwise: its share of the month ("18 of 45 opened this month · 40%")
-- How many of its PRs merged and the median time from opening to merging, against the month's median when the slice is part of the month ("13 merged in a median 16h · 2.6× the month's 6h", "faster than the month's 6h"), plus how many are still open, drafts, or closed without merging
+- How many of its PRs merged and the median time from opening to merging, against the month's median when the slice is part of the month ("13 merged in a median 16h · 2.6× the month's 6h", "faster than the month's 6h"), plus how many are still open, drafts, or closed without merging, and how long the oldest open one has waited ("2 open, oldest 6.1 days"; drafts don't count, since they wait on you)
 - How big its PRs run: the median lines changed (added plus deleted), against the month's median when the slice is part of the month ("Median 270 lines changed · 2.6× the month's 103")
 - Which repos the PRs are in, unless you zoomed to one
 

@@ -71,7 +71,8 @@ private func text(_ focus: PullRequestFocus, metric: PRMetric = .opened) -> Focu
         let text = try #require(text(PullRequestFocus(repository: "acme/infra")))
         #expect(text.title == "acme/infra")
         #expect(text.lines == [
-            "17 of 20 opened this month · 85%", "1 merged in a median 2.1 days · 8.3× the month's 6h", "16 open",
+            "17 of 20 opened this month · 85%", "1 merged in a median 2.1 days · 8.3× the month's 6h",
+            "16 open, oldest 6.1 days",
         ])
     }
 
@@ -136,7 +137,7 @@ private func text(_ focus: PullRequestFocus, metric: PRMetric = .opened) -> Focu
         #expect(try #require(text(PullRequestFocus(day: 2))).lines.contains("3 merged in a median 6h · about the month's 6h"))
         // A slice that is the whole month isn't compared with itself, and where the rest stand stays on the same line.
         let month = try #require(text(PullRequestFocus(metric: .opened)))
-        #expect(month.lines.contains("3 merged in a median 6h · 16 open · 1 closed"))
+        #expect(month.lines.contains("3 merged in a median 6h · 16 open, oldest 6.1 days · 1 closed"))
     }
 
     @Test func mergeTimesThatRoundTheSameReadAsAboutTheMonths() throws {
@@ -179,6 +180,30 @@ private func text(_ focus: PullRequestFocus, metric: PRMetric = .opened) -> Focu
         #expect(try line(slice: [4, 4], month: [3, 3, 3, 4]) == "Median 4 lines changed · about the month's 4")
         // Sizes that print differently are still compared.
         #expect(try line(slice: [2, 2], month: [3, 3, 4, 4]) == "Median 2 lines changed · under the month's 3")
+    }
+
+    @Test func openPullRequestsSayHowLongTheOldestHasWaited() throws {
+        func opened(_ id: String, day: Int, hour: Int, isDraft: Bool = false) -> PullRequest {
+            PullRequest(
+                id: id, title: "Fixture", url: URL(string: "https://example.test/\(id)")!,
+                createdAt: date(day, hour: hour), mergedAt: nil, repository: .init(nameWithOwner: "x/x"),
+                state: .open, isDraft: isDraft
+            )
+        }
+        func standing(_ prs: [PullRequest]) throws -> String? {
+            let snapshot = MonthSnapshot(
+                login: "me", window: MonthWindow(containing: now, calendar: calendar), opened: prs + [pr("m", day: 1)],
+                merged: [], totalContributions: 0, fetchedAt: now
+            )
+            let text = try #require(FocusInsightText(snapshot: snapshot, metric: .opened, focus: PullRequestFocus(repository: "x/x"), now: now))
+            // The first line says "opened"; where the rest stand comes after it.
+            return text.lines.dropFirst().first { $0.contains(" open") }
+        }
+        // The oldest, not the newest or the count's order, and in the heading's own spans.
+        #expect(try standing([opened("a", day: 10, hour: 9), opened("b", day: 9, hour: 9)]) == "2 open, oldest 27h")
+        #expect(try standing([opened("a", day: 10, hour: 11)]) == "1 open for 1h")
+        // A draft waits on its author, so an older draft doesn't make the open ones look stale.
+        #expect(try standing([opened("a", day: 10, hour: 9), opened("d", day: 2, hour: 9, isDraft: true)]) == "1 open for 3h · 1 draft")
     }
 
     @Test func aFoldedHeadingKeepsItsFirstLineAndSaysHowManyMoreItHides() throws {

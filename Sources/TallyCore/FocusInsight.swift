@@ -3,7 +3,8 @@ import Foundation
 /// What a slice of the month's pull requests says beside the month they came from: how big a part of it the slice
 /// is, how many of its PRs merged and how long they took, where the rest stand, and which repositories they're in.
 /// A PR counts as merged on a merge date or GitHub's merged state. Open, draft and closed count only PRs whose state
-/// GitHub reported, so a snapshot saved before states were fetched shows none of them rather than guessing "open".
+/// GitHub reported, so a snapshot saved before states were fetched shows none of them rather than guessing "open"; the
+/// longest any of them has waited likewise comes only from PRs GitHub reported open.
 /// Size likewise counts only PRs whose lines GitHub reported.
 public struct FocusInsight: Sendable, Equatable {
     /// PRs in the slice.
@@ -15,6 +16,8 @@ public struct FocusInsight: Sendable, Equatable {
     public let medianTimeToMerge: TimeInterval?
     /// Open and not a draft.
     public let open: Int
+    /// When the open PR that has waited longest was opened, or nil when none is open. Drafts aren't waiting on anyone.
+    public let oldestOpenSince: Date?
     public let draft: Int
     /// Closed without merging.
     public let closed: Int
@@ -29,7 +32,9 @@ public struct FocusInsight: Sendable, Equatable {
         let landed = pullRequests.filter { $0.mergedAt != nil || $0.state == .merged }
         merged = landed.count
         let unmerged = pullRequests.filter { $0.mergedAt == nil && $0.state != .merged }
-        open = unmerged.filter { $0.state == .open && !$0.isDraft }.count
+        let waiting = unmerged.filter { $0.state == .open && !$0.isDraft }
+        open = waiting.count
+        oldestOpenSince = waiting.map(\.createdAt).min()
         draft = unmerged.filter { $0.state == .open && $0.isDraft }.count
         closed = unmerged.filter { $0.state == .closed }.count
         medianTimeToMerge = landed.medianTimeToMerge

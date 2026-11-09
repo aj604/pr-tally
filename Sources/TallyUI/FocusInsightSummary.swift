@@ -66,7 +66,8 @@ struct FocusInsightSummary: View {
 }
 
 /// The words for a slice: a title saying where the list is zoomed to, then what the slice amounts to, how fast its PRs
-/// merged and how big they run beside the month's, how the rest stand, and where they are. The slice is the one the
+/// merged and how big they run beside the month's, how the rest stand and how long the open ones have waited, and
+/// where they are. The slice is the one the
 /// list opens on, so the other metric's figure, which opens the list on today when today has any, is described as today
 /// rather than the month. Nil for the unfocused list, which is the whole month the summary already describes.
 struct FocusInsightText: Equatable {
@@ -135,7 +136,11 @@ struct FocusInsightText: Equatable {
                 standing.append(merged)
             }
         }
-        if insight.open > 0 { standing.append("\(insight.open.formatted()) open") }
+        if let since = insight.oldestOpenSince {
+            // How long the oldest has waited says more than the count: two open for an hour aren't two open for a week.
+            let age = Self.duration(now.timeIntervalSince(since))
+            standing.append(insight.open == 1 ? "1 open for \(age)" : "\(insight.open.formatted()) open, oldest \(age)")
+        }
         if insight.draft > 0 { standing.append("\(insight.draft.formatted()) draft") }
         if insight.closed > 0 { standing.append("\(insight.closed.formatted()) closed") }
         if !standing.isEmpty { lines.append(standing.joined(separator: " · ")) }
@@ -170,7 +175,8 @@ struct FocusInsightText: Equatable {
         self.lines = lines
 
         help = "Compared with every PR \(verb) this month. Merge times run from opening to merging; "
-            + "open, draft and closed count only PRs whose state GitHub reported. Size is lines added plus deleted."
+            + "open, draft and closed count only PRs whose state GitHub reported, and the oldest open is how long the "
+            + "longest-waiting open PR has been open. Size is lines added plus deleted."
     }
 
     /// The lines a heading shows: all of them open, only the first folded.

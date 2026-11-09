@@ -81,12 +81,10 @@ extension MonthWindow {
         return calendar.date(byAdding: .day, value: day, to: start)!.formatted(style)
     }
 
-    /// A pull request's time in the list, with its date when the list spans the month, in the zone the month was
-    /// counted in, so it agrees with the day the PR is counted on.
-    func rowTime(_ date: Date, withDay: Bool) -> String {
-        var style = withDay
-            ? Date.FormatStyle.dateTime.month(.abbreviated).day().hour().minute()
-            : Date.FormatStyle(date: .omitted, time: .shortened)
+    /// A pull request's time in the list, in the zone the month was counted in, so it agrees with the day the PR is
+    /// counted on. The day itself is in the segment or the row's section header.
+    func rowTime(_ date: Date) -> String {
+        var style = Date.FormatStyle(date: .omitted, time: .shortened)
         style.timeZone = calendar.timeZone
         return date.formatted(style)
     }
@@ -192,20 +190,58 @@ struct PullRequestList: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 60)
             } else {
+                let groups = scope == .month
+                    ? PullRequestWorkspaceDayGroups(pullRequests, metric: metric, in: snapshot.window, at: now).groups : nil
                 // A short list sizes itself; a long one scrolls within the popover's height.
                 ViewThatFits(in: .vertical) {
-                    VStack(alignment: .leading, spacing: 0) { ForEach(pullRequests) { row($0) } }
-                    ScrollView { rows(pullRequests) }
+                    VStack(alignment: .leading, spacing: 0) { rows(pullRequests, groups: groups) }
+                    ScrollView { LazyVStack(alignment: .leading, spacing: 0, pinnedViews: .sectionHeaders) { rows(pullRequests, groups: groups) } }
                 }
                 .frame(maxHeight: 340)
             }
         }
     }
 
-    private func rows(_ pullRequests: [PullRequest]) -> some View {
-        LazyVStack(alignment: .leading, spacing: 0) {
+    /// The whole month reads as one section per day; a single day is already named by its segment, so it lists plainly.
+    @ViewBuilder private func rows(_ pullRequests: [PullRequest], groups: [PullRequestWorkspaceDayGroups.Group]?) -> some View {
+        if let groups {
+            ForEach(groups) { group in
+                Section {
+                    ForEach(group.pullRequests) { row($0) }
+                } header: {
+                    dayHeader(group)
+                }
+            }
+        } else {
             ForEach(pullRequests) { row($0) }
         }
+    }
+
+    /// A day's section header opens that day in the day segment, so a busy day spotted in the month is one click from
+    /// its own list and from stepping to its neighbours.
+    private func dayHeader(_ group: PullRequestWorkspaceDayGroups.Group) -> some View {
+        Button {
+            day = group.day
+            wholeMonth = false
+        } label: {
+            HStack(spacing: 4) {
+                Text(group.title).fontWeight(.semibold)
+                Spacer(minLength: 4)
+                Text(group.countText).monospacedDigit()
+                Image(systemName: "chevron.right").font(.caption2.weight(.semibold))
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.top, 6)
+            .padding(.bottom, 2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.bar)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Show only \(group.title)")
+        .accessibilityLabel("\(group.title), \(group.countText)")
+        .accessibilityHint("Shows only this day")
     }
 
     /// The day segment names the day it shows, and the arrows beside it step that day, so a day picked from the charts
@@ -310,7 +346,7 @@ struct PullRequestList: View {
                             Text(checks.label).font(.caption2.weight(.medium)).foregroundStyle(checks.tint)
                                 .lineLimit(1).fixedSize()
                         }
-                        Text(snapshot.window.rowTime(date, withDay: scope == .month)).monospacedDigit().lineLimit(1).fixedSize()
+                        Text(snapshot.window.rowTime(date)).monospacedDigit().lineLimit(1).fixedSize()
                     }
                     .font(.caption)
                     .foregroundStyle(.secondary)

@@ -27,18 +27,25 @@ import TallyCore
         )
     }
 
-    @Test func listOffersCopyLinksBesideTheCount() async throws {
+    @Test func listOffersCopyLinksAtTheEndOfTheSearchRow() async throws {
         let pasteboard = privatePasteboard()
         defer { pasteboard.releaseGlobally() }
         let (host, window) = await hosted(pasteboard: pasteboard)
         defer { window.orderOut(nil) }
-        let buttons = descendants(of: host).compactMap { $0 as? NSButton }
-        print("List copy action labels: \(buttons.compactMap { $0.accessibilityLabel() }.sorted())")
-        let button = try #require(buttons.first { $0.title == "Copy links" })
+        let button = try copyButton(in: host)
         #expect(button.isEnabled)
         #expect(button.accessibilityLabel() == "Copy links for 2 PRs in this list")
+        #expect(button.toolTip == "Copy links for 2 PRs in this list, one per line")
+        let field = try #require(descendants(of: host).compactMap { $0 as? NSTextField }.first {
+            $0.placeholderString?.hasPrefix("Search ") == true
+        })
         let frame = host.convert(button.bounds, from: button)
-        #expect(frame.minX >= 0 && frame.maxX <= 288 && frame.height > 0)
+        let fieldFrame = host.convert(field.bounds, from: field)
+        #expect(frame.minX >= fieldFrame.maxX && frame.maxX <= 288 && frame.height > 0)
+        #expect(abs(frame.midY - fieldFrame.midY) < 4)
+        // The count it replaced lives in the field's placeholder, so no text in the list repeats it.
+        #expect(field.placeholderString == "Search 2 PRs opened")
+        #expect(!descendants(of: host).compactMap { $0 as? NSTextField }.contains { $0.stringValue == "2 PRs opened" })
     }
 
     @Test func copyingTheListReplacesThePasteboardInVisibleOrder() async throws {
@@ -51,7 +58,6 @@ import TallyCore
         button.sendAction(button.action, to: button.target)
         #expect(pasteboard.string(forType: .string) == "https://github.com/acme/infra/pull/22\nhttps://github.com/me/app/pull/11")
         #expect(pasteboard.pasteboardItems?.count == 1)
-        #expect(button.title == "Links copied")
         #expect(button.toolTip == "2 links copied")
     }
 
@@ -62,7 +68,7 @@ import TallyCore
         defer { window.orderOut(nil) }
         let picker = try #require(descendants(of: host).compactMap { $0 as? NSPopUpButton }.first)
         let field = try #require(descendants(of: host).compactMap { $0 as? NSTextField }.first {
-            $0.placeholderString == "Search title, repo, # or URL"
+            $0.placeholderString?.hasPrefix("Search ") == true
         })
         let scope = try #require(descendants(of: host).compactMap { $0 as? NSSegmentedControl }.first)
 
@@ -79,7 +85,7 @@ import TallyCore
         field.stringValue = "33"
         field.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: field))
         await settle(host)
-        #expect(try copyButton(in: host).title == "Copy links")
+        #expect(try copyButton(in: host).toolTip == "Copy links for 1 PR in this list, one per line")
         try expectCopied("https://github.com/me/app/pull/33", in: host, pasteboard: pasteboard)
 
         field.stringValue = ""
@@ -101,7 +107,7 @@ import TallyCore
             let (host, window) = await hosted(focus: focus, pasteboard: pasteboard)
             defer { window.orderOut(nil) }
             try expectCopied("https://github.com/me/app/pull/\(id)", in: host, pasteboard: pasteboard)
-            #expect(try copyButton(in: host).title == "Link copied")
+            #expect(try copyButton(in: host).toolTip == "1 link copied")
         }
     }
 
@@ -111,7 +117,7 @@ import TallyCore
         let (host, window) = await hosted(pasteboard: pasteboard)
         defer { window.orderOut(nil) }
         let field = try #require(descendants(of: host).compactMap { $0 as? NSTextField }.first {
-            $0.placeholderString == "Search title, repo, # or URL"
+            $0.placeholderString?.hasPrefix("Search ") == true
         })
         field.stringValue = "no matches"
         field.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: field))
@@ -143,7 +149,7 @@ import TallyCore
         host.rootView = PullRequestWorkspaceCopyLinksButton(pullRequests: [updated], pasteboard: pasteboard)
         await settle(host)
         let button = try copyButton(in: host)
-        #expect(button.title == "Copy links")
+        #expect(button.toolTip == "Copy links for 1 PR in this list, one per line")
         #expect(button.cell?.accessibilityLabel() == "Copy links for 1 PR in this list")
         try expectCopied(url.absoluteString, in: host, pasteboard: pasteboard)
         #expect(button.cell?.accessibilityLabel() == "Copy links for 1 PR in this list")

@@ -156,12 +156,23 @@ struct PullRequestList: View {
                 }
             }
             filters
+            // The count lives in the field's placeholder and the copy action at its end, so the controls take one
+            // row fewer before the first PR.
             HStack(spacing: 6) {
-                TextField("Search title, repo, # or URL", text: $searchText)
+                TextField(PullRequestWorkspaceSearch.prompt(count: scoped.count, metric: metric), text: $searchText)
                     .textFieldStyle(.roundedBorder)
                     .accessibilityLabel("Search pull requests")
                     .help("Search this list by title, repository, #123, owner/repository#123, or a PR URL")
                     .accessibilityHint("Search this list by title, repository, #123, owner/repository#123, or a PR URL")
+                if let matches = search.matchText(pullRequests.count, of: scoped.count) {
+                    Text(matches)
+                        .font(.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .fixedSize()
+                        .accessibilityLabel(search.matchAccessibilityLabel(pullRequests.count, of: scoped.count, metric: metric) ?? matches)
+                }
                 if !searchText.isEmpty {
                     Button {
                         searchText = ""
@@ -173,15 +184,8 @@ struct PullRequestList: View {
                     .help("Clear search")
                     .accessibilityLabel("Clear search")
                 }
-            }
-            HStack {
-                Text(search.isActive
-                     ? "\(pullRequests.count.formatted()) of \(scoped.count.formatted()) \(metric.noun)"
-                     : "\(pullRequests.count.formatted()) \(metric.noun)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 4)
                 PullRequestWorkspaceCopyLinksButton(pullRequests: pullRequests, pasteboard: copyLinkPasteboard)
+                    .frame(width: 24, height: 24)
             }
             if pullRequests.isEmpty {
                 Text(search.isActive ? "No matching PRs in this list. Try another search, change the filters, or clear the search."

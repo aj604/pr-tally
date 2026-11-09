@@ -21,7 +21,7 @@ private func projection(perDay: Int, in days: Int = 10) -> MonthProjection {
     @Test func aGoalBelowTheRangeIsLikelyToBeReached() {
         let steady = projection(perDay: 10)
         #expect(MonthInsightOutlook(projection: steady, goal: steady.low) == .likelyToReach)
-        #expect(MonthInsightOutlook(projection: steady, goal: 100) == .likelyToReach)
+        #expect(MonthInsightOutlook(projection: steady, goal: steady.count + 1) == .likelyToReach)
     }
 
     @Test func aGoalInsideTheRangeStaysOpen() {

@@ -56,6 +56,8 @@ public struct GitHubClient: Sendable {
     private let retryDelays: [Duration]
     /// Readies the transport for one refresh, so every request in it shares one set of credentials.
     private let open: @Sendable () async throws -> GraphQLTransport
+    /// Extra per-PR fields GitHub refused this token during the refresh in progress.
+    private let withheld = WithheldFields()
 
     public init(transport: @escaping GraphQLTransport) {
         self.init(transport: transport, retryDelays: Self.retryDelays)
@@ -232,39 +234,82 @@ public struct GitHubClient: Sendable {
     }
 
     private func searchPage(query terms: String, after cursor: String?) async throws -> SearchData.Search {
-        let query = """
+        var variables = ["q": terms]
+        variables["after"] = cursor
+        while true {
+            let omitted = withheld.fields
+            let envelope: Envelope<SearchData> = try await post(
+                query: Self.searchQuery(omitting: omitted), variables: variables
+            )
+            // A token without permission for a field that only decorates a row (CI status, review state) must
+            // not stop the counts, so ask again without it. Each pass withholds at least one more field, so
+            // this ends; anything else wrong with the reply is reported as before.
+            if let denied = Self.deniedExtras(in: envelope.errors, omitting: omitted) {
+                withheld.formUnion(denied)
+                continue
+            }
+            return try Self.unwrap(envelope).search
+        }
+    }
+
+    /// The search query, less the extras this token was refused. Every one is nullable, so leaving one out
+    /// only means the row has no signal for it.
+    private static func searchQuery(omitting omitted: Set<ExtraField>) -> String {
+        let extras = [
+            omitted.contains(.reviewDecision) ? "" : " reviewDecision",
+            omitted.contains(.statusCheckRollup) ? "" : "\n                statusCheckRollup { state }",
+        ].joined()
+        return """
         query($q: String!, $after: String) {
           search(type: ISSUE, query: $q, first: \(Self.pageSize), after: $after) {
             issueCount
             pageInfo { hasNextPage endCursor }
             nodes {
               ... on PullRequest {
-                id title url createdAt mergedAt state isDraft reviewDecision
-                statusCheckRollup { state }
+                id title url createdAt mergedAt state isDraft\(extras)
                 repository { nameWithOwner }
               }
             }
           }
         }
         """
-        var variables = ["q": terms]
-        variables["after"] = cursor
-        let data: SearchData = try await send(query: query, variables: variables)
-        return data.search
+    }
+
+    /// The extras `errors` say this token may not read, or nil unless every error is a refusal about an
+    /// extra not yet withheld. GitHub answers a fine-grained token that lacks the Checks permission with
+    /// `FORBIDDEN` "Resource not accessible by personal access token" and a path through `statusCheckRollup`.
+    private static func deniedExtras(in errors: [Failure]?, omitting omitted: Set<ExtraField>) -> Set<ExtraField>? {
+        guard let errors, !errors.isEmpty else { return nil }
+        var denied = Set<ExtraField>()
+        for error in errors {
+            guard error.type == "FORBIDDEN" || error.message.hasPrefix("Resource not accessible") else { return nil }
+            let named = ExtraField.allCases.filter {
+                !omitted.contains($0) && (error.path?.contains($0.rawValue) == true || error.message.contains($0.rawValue))
+            }
+            if named.isEmpty { return nil }
+            denied.formUnion(named)
+        }
+        return denied
     }
 
     private func send<Response: Decodable>(query: String, variables: [String: String]) async throws -> Response {
+        try Self.unwrap(try await post(query: query, variables: variables))
+    }
+
+    private func post<Response: Decodable>(query: String, variables: [String: String]) async throws -> Envelope<Response> {
         let body = try JSONEncoder().encode(Request(query: query, variables: variables))
         let data = try await deliver(body)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        let envelope: Envelope<Response>
         do {
-            envelope = try decoder.decode(Envelope<Response>.self, from: data)
+            return try decoder.decode(Envelope<Response>.self, from: data)
         } catch DecodingError.dataCorrupted(let context) where context.codingPath.isEmpty {
             // Not JSON at all, so a page from whatever sits between this Mac and GitHub. Waiting won't fix it.
             throw GitHubError.notGitHub
         }
+    }
+
+    private static func unwrap<Response>(_ envelope: Envelope<Response>) throws -> Response {
         // Partial data would silently undercount, so any GraphQL error fails the fetch.
         if let error = envelope.errors?.first { throw GitHubError.graphQL(error.message) }
         guard let result = envelope.data else { throw GitHubError.graphQL("Empty response") }
@@ -315,10 +360,45 @@ private struct Request: Encodable {
     let variables: [String: String]
 }
 
+private struct Failure: Decodable {
+    /// One step of the path to the field that failed: a name, or a list index.
+    struct Step: Decodable {
+        let name: String
+        init(from decoder: Decoder) throws {
+            let value = try decoder.singleValueContainer()
+            if let text = try? value.decode(String.self) {
+                name = text
+            } else {
+                name = String(try value.decode(Int.self))
+            }
+        }
+    }
+    let message: String
+    let type: String?
+    private let steps: [Step]?
+    var path: [String]? { steps?.map(\.name) }
+
+    private enum CodingKeys: String, CodingKey { case message, type, steps = "path" }
+}
+
 private struct Envelope<Payload: Decodable>: Decodable {
-    struct Failure: Decodable { let message: String }
     let data: Payload?
     let errors: [Failure]?
+}
+
+/// A per-PR field that only decorates a list row, so a token that can't read it still gets every count.
+private enum ExtraField: String, CaseIterable {
+    case reviewDecision, statusCheckRollup
+}
+
+/// The extras refused during one refresh. Held per refresh rather than for good, so a token that gains
+/// the permission gets its labels back on the next one.
+private final class WithheldFields: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored = Set<ExtraField>()
+
+    var fields: Set<ExtraField> { lock.withLock { stored } }
+    func formUnion(_ more: Set<ExtraField>) { lock.withLock { stored.formUnion(more) } }
 }
 
 private struct Refusal: Decodable {

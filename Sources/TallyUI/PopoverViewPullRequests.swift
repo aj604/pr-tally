@@ -82,11 +82,13 @@ extension MonthWindow {
     }
 
     /// A pull request's time in the list, in the zone the month was counted in, so it agrees with the day the PR is
-    /// counted on. The day itself is in the segment or the row's section header.
-    func rowTime(_ date: Date) -> String {
+    /// counted on. The day itself is in the segment or the row's section header, unless the whole month lists without
+    /// sections, when `withDay` puts it on the row.
+    func rowTime(_ date: Date, withDay: Bool = false) -> String {
         var style = Date.FormatStyle(date: .omitted, time: .shortened)
         style.timeZone = calendar.timeZone
-        return date.formatted(style)
+        guard withDay, let day = dayIndex(of: date) else { return date.formatted(style) }
+        return "\(dayTitle(day)), \(date.formatted(style))"
     }
 }
 
@@ -103,6 +105,7 @@ struct PullRequestList: View {
     /// A status, review or merge-funnel part, picked from one menu.
     @State private var statusChoice: PullRequestWorkspaceStatusFilter.Choice?
     @State private var searchText = ""
+    @State private var sort = PullRequestWorkspaceSort.newest
 
     /// `metric` is the one the goal counts; the focus can ask for the other.
     init(
@@ -146,7 +149,7 @@ struct PullRequestList: View {
         let statuses = PullRequestWorkspaceStatusFilter(inRepository, funnel: members, selected: statusChoice)
         let scoped = PullRequestWorkspaceStatusFilter.apply(statusChoice, to: inRepository, funnel: members)
         let search = PullRequestWorkspaceSearch(searchText)
-        let pullRequests = search.results(in: scoped)
+        let pullRequests = sort.apply(to: search.results(in: scoped))
         let metrics = PullRequestWorkspaceMetric { other in
             other == metric ? scoped.count : PullRequestWorkspaceStatusFilter.apply(
                 PullRequestWorkspaceMetric.choice(statusChoice, keptFor: other),
@@ -192,6 +195,10 @@ struct PullRequestList: View {
                     .help("Clear search")
                     .accessibilityLabel("Clear search")
                 }
+                if PullRequestWorkspaceSort.isOffered(sort, for: scoped) {
+                    PullRequestWorkspaceSortPicker(selection: $sort)
+                        .frame(width: 24, height: 24)
+                }
                 PullRequestWorkspaceCopyLinksButton(pullRequests: pullRequests, pasteboard: copyLinkPasteboard)
                     .frame(width: 24, height: 24)
             }
@@ -202,7 +209,7 @@ struct PullRequestList: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 60)
             } else {
-                let groups = scope == .month
+                let groups = scope == .month && sort.groupsByDay
                     ? PullRequestWorkspaceDayGroups(pullRequests, metric: metric, in: snapshot.window, at: now).groups : nil
                 // A short list sizes itself; a long one scrolls within the popover's height.
                 ViewThatFits(in: .vertical) {
@@ -214,7 +221,8 @@ struct PullRequestList: View {
         }
     }
 
-    /// The whole month reads as one section per day; a single day is already named by its segment, so it lists plainly.
+    /// The whole month reads as one section per day unless it is ranked slowest to merge; a single day is already named
+    /// by its segment, so it lists plainly.
     @ViewBuilder private func rows(_ pullRequests: [PullRequest], groups: [PullRequestWorkspaceDayGroups.Group]?) -> some View {
         if let groups {
             ForEach(groups) { group in
@@ -348,7 +356,7 @@ struct PullRequestList: View {
                             Text(checks.label).font(.caption2.weight(.medium)).foregroundStyle(checks.tint)
                                 .lineLimit(1).fixedSize()
                         }
-                        Text(snapshot.window.rowTime(date)).monospacedDigit().lineLimit(1).fixedSize()
+                        Text(snapshot.window.rowTime(date, withDay: scope == .month && !sort.groupsByDay)).monospacedDigit().lineLimit(1).fixedSize()
                     }
                     .font(.caption)
                     .foregroundStyle(.secondary)

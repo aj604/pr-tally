@@ -12,7 +12,7 @@ The menu bar shows a progress ring for the month next to today's count. The ring
 - Recent activity over up to seven completed days in this month, compared with the preceding seven once fourteen full days exist; today is excluded
 - A dated goal-hit shortcut that lists the PRs from the day the current goal was first reached
 - Your top repos (click one to list its PRs this month), plus merged PRs and total GitHub contributions. In the merge funnel, click "Opened this month" to list the PRs opened this month that haven't merged, or "N older PRs also merged" to list those merged this month that were opened before it. Click the Opened or Merged figure your goal doesn't count to list those PRs
-- The PRs behind the count: **See the N PRs** lists today's or the whole month's, and clicking one opens it on GitHub. A day or repo picked from the summary shows as a filter; click its × to go back to the whole list
+- The PRs behind the count: **See the N PRs** lists today's or the whole month's, and clicking one opens it on GitHub. A day picked from the summary opens in the first segment, where the ‹ and › arrows step to the day before or after, up to today; **This month** shows the whole month and clicking the day segment returns to that day. A repo picked from the summary shows as a filter; click its × to go back to the whole list
 
 In the PR list, choose a repository or search titles and repository names. Use `#123`, `owner/repository#123`, or a pasted PR URL for exact lookup. Search stays within the selected day, repository, metric, and merge-funnel filters. **Copy link** copies one PR's URL; **Copy links** copies every matching URL, one per line in list order, including rows beyond the scroll viewport.
 

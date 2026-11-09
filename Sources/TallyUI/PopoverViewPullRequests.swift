@@ -5,11 +5,8 @@ import TallyCore
 /// How far back the pull request list reaches.
 enum PullRequestScope: Hashable {
     case today, month
-    /// One zero-based day of the month, picked from the charts.
+    /// One zero-based day of the month, picked from the charts or stepped to in the list.
     case day(Int)
-
-    /// The scopes the picker offers. A picked day shows as a filter beside it instead.
-    static let pickable: [PullRequestScope] = [.today, .month]
 
     /// Where the list opens: on a day picked from the charts (as Today when it is today), on the whole month for a
     /// repository picked from the top repos or a part of the merge funnel, and otherwise on what the menu bar number
@@ -108,7 +105,9 @@ struct PullRequestList: View {
     let metric: PRMetric
     let now: Date
     private let copyLinkPasteboard: NSPasteboard
-    @State private var scope: PullRequestScope
+    /// The day the day segment shows, kept while the whole month is showing so picking the segment returns to it.
+    @State private var day: Int
+    @State private var wholeMonth: Bool
     @State private var repository: String?
     @State private var funnel: FunnelPart?
     @State private var statusChoice: PullRequestWorkspaceStatusFilter.Choice?
@@ -124,10 +123,16 @@ struct PullRequestList: View {
         self.metric = metric
         self.now = now
         self.copyLinkPasteboard = copyLinkPasteboard
-        _scope = State(initialValue: .opening(for: focus, in: snapshot, metric: metric, at: now))
+        let scope = PullRequestScope.opening(for: focus, in: snapshot, metric: metric, at: now)
+        _day = State(initialValue: PullRequestWorkspaceDayStepper.openingDay(for: scope, in: snapshot.window, at: now))
+        _wholeMonth = State(initialValue: scope == .month)
         _repository = State(initialValue: focus.repository)
         _funnel = State(initialValue: focus.funnel)
     }
+
+    private var stepper: PullRequestWorkspaceDayStepper { .init(day: day, in: snapshot.window, at: now) }
+
+    private var scope: PullRequestScope { wholeMonth ? .month : stepper.scope }
 
     var body: some View {
         let available = snapshot.listedPullRequests(for: metric, scope: scope, funnel: funnel, at: now)
@@ -143,12 +148,7 @@ struct PullRequestList: View {
         let search = PullRequestWorkspaceSearch(searchText)
         let pullRequests = search.results(in: scoped)
         VStack(alignment: .leading, spacing: 10) {
-            // A picked day selects neither segment; its filter below says what is showing.
-            Picker("Show", selection: $scope) {
-                ForEach(PullRequestScope.pickable, id: \.self) { Text($0 == .today ? "Today" : "This month").tag($0) }
-            }
-            .labelsHidden()
-            .pickerStyle(.segmented)
+            scopeBar
             HStack(spacing: 6) {
                 PullRequestWorkspaceRepositoryPicker(repositories: repositories, selection: $repository)
                 if statuses.isOffered {
@@ -208,13 +208,39 @@ struct PullRequestList: View {
         }
     }
 
+    /// The day segment names the day it shows, and the arrows beside it step that day, so a day picked from the charts
+    /// needs no filter of its own and its neighbours are a click away.
+    private var scopeBar: some View {
+        let stepper = stepper
+        return HStack(spacing: 2) {
+            dayArrow(to: stepper.previous, systemImage: "chevron.left", label: "Previous day")
+            Picker("Show", selection: $wholeMonth) {
+                Text(stepper.title).tag(false)
+                Text("This month").tag(true)
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            dayArrow(to: stepper.next, systemImage: "chevron.right", label: "Next day")
+        }
+    }
+
+    /// Stepping works on the day segment, so the arrows rest while the whole month is showing.
+    private func dayArrow(to target: PullRequestWorkspaceDayStepper.Day?, systemImage: String, label: String) -> some View {
+        Button {
+            if let target { day = target.day }
+        } label: {
+            Image(systemName: systemImage).frame(width: 18, height: 22).contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .disabled(wholeMonth || target == nil)
+        .help(target.map { "Show \($0.title)" } ?? label)
+        .accessibilityLabel(label)
+        .accessibilityValue(target?.title ?? "")
+    }
+
     @ViewBuilder private var filters: some View {
-        let day: Int? = if case .day(let day) = scope { day } else { nil }
-        if day != nil || repository != nil || funnel != nil {
+        if repository != nil || funnel != nil {
             HStack(spacing: 6) {
-                if let day {
-                    FilterChip(title: snapshot.window.dayTitle(day), help: "Show the whole month") { scope = .month }
-                }
                 if let repository {
                     FilterChip(title: repository, help: "Show every repository") { self.repository = nil }
                 }

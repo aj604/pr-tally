@@ -13,6 +13,13 @@ public struct PullRequest: Sendable, Equatable, Decodable, Identifiable {
         case merged = "MERGED"
     }
 
+    /// Where review stands on a PR whose repository asks for reviews.
+    public enum ReviewDecision: String, Sendable, Equatable, Decodable {
+        case approved = "APPROVED"
+        case changesRequested = "CHANGES_REQUESTED"
+        case reviewRequired = "REVIEW_REQUIRED"
+    }
+
     public let id: String
     public let title: String
     public let url: URL
@@ -24,10 +31,13 @@ public struct PullRequest: Sendable, Equatable, Decodable, Identifiable {
     public let state: State?
     /// Only meaningful while `state` is open: GitHub keeps the flag on a PR after it merges or closes.
     public let isDraft: Bool
+    /// Nil when GitHub reports none: the repository doesn't require reviews, or the snapshot predates this field.
+    /// Nil means "no signal", never "approved" or "unreviewed".
+    public let reviewDecision: ReviewDecision?
 
     public init(
         id: String, title: String, url: URL, createdAt: Date, mergedAt: Date?, repository: Repository,
-        state: State? = nil, isDraft: Bool = false
+        state: State? = nil, isDraft: Bool = false, reviewDecision: ReviewDecision? = nil
     ) {
         self.id = id
         self.title = title
@@ -37,10 +47,11 @@ public struct PullRequest: Sendable, Equatable, Decodable, Identifiable {
         self.repository = repository
         self.state = state
         self.isDraft = isDraft
+        self.reviewDecision = reviewDecision
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, url, createdAt, mergedAt, repository, state, isDraft
+        case id, title, url, createdAt, mergedAt, repository, state, isDraft, reviewDecision
     }
 
     public init(from decoder: Decoder) throws {
@@ -54,6 +65,8 @@ public struct PullRequest: Sendable, Equatable, Decodable, Identifiable {
         // A state added to GitHub later must not fail the whole refresh, so it reads as unknown.
         state = (try? container.decodeIfPresent(State.self, forKey: .state)) ?? nil
         isDraft = try container.decodeIfPresent(Bool.self, forKey: .isDraft) ?? false
+        // Same tolerance as `state`: a decision GitHub adds later reads as no signal.
+        reviewDecision = (try? container.decodeIfPresent(ReviewDecision.self, forKey: .reviewDecision)) ?? nil
     }
 }
 

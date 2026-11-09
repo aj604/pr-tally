@@ -13,11 +13,12 @@ private let monthStart = utc.date(from: DateComponents(year: 2026, month: 11, da
 
 private func pr(
     _ id: Int, createdAt: Date, mergedAt: Date? = nil, repo: String = "me/app",
-    state: PullRequest.State? = nil, isDraft: Bool = false
+    state: PullRequest.State? = nil, isDraft: Bool = false, review: PullRequest.ReviewDecision? = nil
 ) -> PullRequest {
     PullRequest(
         id: "PR_\(id)", title: "PR \(id)", url: URL(string: "https://github.com/\(repo)/pull/\(id)")!,
-        createdAt: createdAt, mergedAt: mergedAt, repository: .init(nameWithOwner: repo), state: state, isDraft: isDraft
+        createdAt: createdAt, mergedAt: mergedAt, repository: .init(nameWithOwner: repo), state: state, isDraft: isDraft,
+        reviewDecision: review
     )
 }
 
@@ -93,6 +94,7 @@ private final class FakeGitHub: Sendable {
                     "repository": ["nameWithOwner": pr.repository.nameWithOwner],
                     "state": pr.state?.rawValue as Any? ?? NSNull(),
                     "isDraft": pr.isDraft,
+                    "reviewDecision": pr.reviewDecision?.rawValue as Any? ?? NSNull(),
                 ] as [String: Any]
             },
         ]
@@ -220,6 +222,56 @@ private func client(_ fake: FakeGitHub, overlap: Overlap) -> GitHubClient {
         let decoded = try decoder.decode(PullRequest.self, from: json)
         #expect(decoded.state == nil)
         #expect(decoded.isDraft)
+    }
+
+    @Test func carriesEachPullRequestsReviewDecision() async throws {
+        let prs = [
+            pr(1, createdAt: monthStart, state: .open, review: .approved),
+            pr(2, createdAt: monthStart.addingTimeInterval(60), state: .open, review: .changesRequested),
+            pr(3, createdAt: monthStart.addingTimeInterval(120), state: .open, review: .reviewRequired),
+            pr(4, createdAt: monthStart.addingTimeInterval(180), state: .open),
+        ]
+        let snapshot = try await client(FakeGitHub(prs: prs)).fetchSnapshot(at: now, calendar: utc)
+        #expect(snapshot.opened == prs)
+        #expect(snapshot.opened.map(\.reviewDecision) == [.approved, .changesRequested, .reviewRequired, nil])
+    }
+
+    @Test func keepsReviewDecisionsAcrossSplitSearchesPastTheCap() async throws {
+        let prs = (0..<2500).map {
+            pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 840), state: .open, review: $0 % 2 == 0 ? .approved : nil)
+        }
+        let snapshot = try await client(FakeGitHub(prs: prs)).fetchSnapshot(at: now, calendar: utc)
+        #expect(snapshot.opened.count == 2500)
+        #expect(snapshot.opened.filter { $0.reviewDecision == .approved }.count == 1250)
+    }
+
+    @Test func aReviewDecisionGitHubAddsLaterReadsAsNoSignalAndOldDataHasNone() throws {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let future = Data(#"""
+        {"id":"PR_1","title":"New","url":"https://github.com/me/app/pull/1","createdAt":"2026-11-01T00:00:00Z",
+         "mergedAt":null,"repository":{"nameWithOwner":"me/app"},"state":"OPEN","reviewDecision":"SHIPPED_IT"}
+        """#.utf8)
+        let old = Data(#"""
+        {"id":"PR_1","title":"Old","url":"https://github.com/me/app/pull/1","createdAt":"2026-11-01T00:00:00Z",
+         "mergedAt":null,"repository":{"nameWithOwner":"me/app"},"state":"OPEN"}
+        """#.utf8)
+        #expect(try decoder.decode(PullRequest.self, from: future).reviewDecision == nil)
+        #expect(try decoder.decode(PullRequest.self, from: future).state == .open)
+        #expect(try decoder.decode(PullRequest.self, from: old).reviewDecision == nil)
+    }
+
+    @Test func asksGitHubForReviewDecision() async throws {
+        let queries = Box<[String]>([])
+        let fake = FakeGitHub(prs: [pr(1, createdAt: monthStart, state: .open)])
+        _ = try await GitHubClient { body in
+            let request = try JSONSerialization.jsonObject(with: body) as! [String: Any]
+            queries.value.append(request["query"] as! String)
+            return try fake.respond(to: body)
+        }.fetchSnapshot(at: now, calendar: utc)
+        let search = queries.value.filter { $0.contains("search(") }
+        #expect(!search.isEmpty)
+        #expect(search.allSatisfy { $0.contains("reviewDecision") })
     }
 
     @Test func asksGitHubForStateAndDraft() async throws {

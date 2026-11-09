@@ -32,7 +32,7 @@ public struct FocusInsight: Sendable, Equatable {
         open = unmerged.filter { $0.state == .open && !$0.isDraft }.count
         draft = unmerged.filter { $0.state == .open && $0.isDraft }.count
         closed = unmerged.filter { $0.state == .closed }.count
-        medianTimeToMerge = median(landed.compactMap { pr in pr.mergedAt.map { $0.timeIntervalSince(pr.createdAt) } })
+        medianTimeToMerge = landed.medianTimeToMerge
         medianLinesChanged = pullRequests.medianLinesChanged
         repositories = Dictionary(grouping: pullRequests, by: \.repository.nameWithOwner)
             .map { RepoCount(name: $0.key, count: $0.value.count) }
@@ -57,11 +57,21 @@ extension MonthSnapshot {
     public func medianLinesChanged(for metric: PRMetric) -> Double? {
         pullRequests(for: metric).medianLinesChanged
     }
+
+    /// The middle open-to-merge time of the PRs the metric counted this month that have merged, or nil when none has.
+    public func medianTimeToMerge(for metric: PRMetric) -> TimeInterval? {
+        pullRequests(for: metric).medianTimeToMerge
+    }
 }
 
 extension [PullRequest] {
     fileprivate var medianLinesChanged: Double? {
         median(compactMap(\.linesChanged).map(Double.init))
+    }
+
+    /// Over the PRs with a merge date; one merged by state alone has no time to measure.
+    fileprivate var medianTimeToMerge: TimeInterval? {
+        median(compactMap { pr in pr.mergedAt.map { $0.timeIntervalSince(pr.createdAt) } })
     }
 }
 

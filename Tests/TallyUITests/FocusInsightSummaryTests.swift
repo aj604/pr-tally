@@ -53,7 +53,8 @@ private func text(_ focus: PullRequestFocus, metric: PRMetric = .opened) -> Focu
         #expect(text.title == "Tue, Nov 3")
         #expect(text.lines == [
             "4 opened · 2× an average day",
-            "3 merged in a median 6h · 1 closed",
+            "3 merged in a median 6h · about the month's 6h",
+            "1 closed",
             "2 repos, most in me/app (3)",
         ])
     }
@@ -69,13 +70,15 @@ private func text(_ focus: PullRequestFocus, metric: PRMetric = .opened) -> Focu
     @Test func aRepositoryShowsItsShareOfTheMonthAndNoRepositoryLine() throws {
         let text = try #require(text(PullRequestFocus(repository: "acme/infra")))
         #expect(text.title == "acme/infra")
-        #expect(text.lines == ["17 of 20 opened this month · 85%", "1 merged in a median 2.1 days · 16 open"])
+        #expect(text.lines == [
+            "17 of 20 opened this month · 85%", "1 merged in a median 2.1 days · 8.3× the month's 6h", "16 open",
+        ])
     }
 
     @Test func theOtherMetricIsTheWholeMonthWithItsMergeTime() throws {
         let text = try #require(text(PullRequestFocus(metric: .merged)))
         #expect(text.title == "Merged this month")
-        #expect(text.lines == ["3 merged this month", "Median 6h from open to merge", "2 repos, most in me/app (2)"])
+        #expect(text.lines == ["3 merged this month", "Merged in a median 6h", "2 repos, most in me/app (2)"])
     }
 
     @Test func theOtherMetricWithMergesTodayIsDescribedAsTodayLikeTheListItOpens() throws {
@@ -89,7 +92,7 @@ private func text(_ focus: PullRequestFocus, metric: PRMetric = .opened) -> Focu
         )
         let text = try #require(FocusInsightText(snapshot: busy, metric: .opened, focus: PullRequestFocus(metric: .merged), now: now))
         #expect(text.title == "Merged today")
-        #expect(text.lines == ["2 merged · 4× an average day", "Median 2h from open to merge", "All in me/app"])
+        #expect(text.lines == ["2 merged · 4× an average day", "Merged in a median 2h · faster than the month's 3h", "All in me/app"])
         #expect(FocusInsightText.otherMetricHelp(snapshot: busy, metric: .opened, now: now) == "List the 2 PRs merged today")
         #expect(FocusInsightText.otherMetricHelp(snapshot: snapshot, metric: .opened, now: now) == "List the 3 PRs merged")
     }
@@ -124,6 +127,16 @@ private func text(_ focus: PullRequestFocus, metric: PRMetric = .opened) -> Focu
         #expect(try text(PullRequestFocus(day: 4)).lines.contains("Median 1 line changed · under the month's 50"))
         // The whole month is its own size, so it isn't compared with itself.
         #expect(try text(PullRequestFocus(metric: .opened)).lines.contains("Median 50 lines changed"))
+    }
+
+    @Test func aSlicesMergeTimeIsComparedWithTheMonthsLikeItsSize() throws {
+        // Merged in 2h, 6h and 50h over the month: a median of 6h. me/app's two took 2h and 6h, a median of 4h.
+        #expect(try #require(text(PullRequestFocus(repository: "me/app"))).lines.contains("2 merged in a median 4h · faster than the month's 6h"))
+        // Within a tenth of the month's either way reads as about the same.
+        #expect(try #require(text(PullRequestFocus(day: 2))).lines.contains("3 merged in a median 6h · about the month's 6h"))
+        // A slice that is the whole month isn't compared with itself, and where the rest stand stays on the same line.
+        let month = try #require(text(PullRequestFocus(metric: .opened)))
+        #expect(month.lines.contains("3 merged in a median 6h · 16 open · 1 closed"))
     }
 
     @Test func aSliceWithoutSizesSaysNothingAboutSize() throws {

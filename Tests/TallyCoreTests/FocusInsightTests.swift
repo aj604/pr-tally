@@ -75,6 +75,21 @@ private func pr(
         #expect(snapshot.medianLinesChanged(for: .merged) == 900)
     }
 
+    @Test func theMonthsMedianMergeTimeIsOverTheMetricsMergedPullRequests() {
+        let opened = [pr("a", mergedAfter: 2), pr("b", mergedAfter: 10), pr("c"), pr("d", state: .merged)]
+        let snapshot = MonthSnapshot(
+            login: "me", window: MonthWindow(containing: date(1), calendar: calendar), opened: opened,
+            merged: [pr("b", mergedAfter: 10)], totalContributions: 0, fetchedAt: date(5)
+        )
+        // Unmerged PRs, and one merged by state alone with no date, have no time to measure.
+        #expect(snapshot.medianTimeToMerge(for: .opened) == TimeInterval(6 * 3_600))
+        #expect(snapshot.medianTimeToMerge(for: .merged) == TimeInterval(10 * 3_600))
+        let none = MonthSnapshot(
+            login: "me", window: snapshot.window, opened: [pr("c")], merged: [], totalContributions: 0, fetchedAt: date(5)
+        )
+        #expect(none.medianTimeToMerge(for: .opened) == nil)
+    }
+
     @Test func repositoriesRankByCountThenName() {
         let insight = FocusInsight(pullRequests: [pr("a", repo: "z/z"), pr("b", repo: "a/a"), pr("c", repo: "m/m"), pr("d", repo: "m/m")], monthCount: 4)
         #expect(insight.repositories.map(\.name) == ["m/m", "a/a", "z/z"])

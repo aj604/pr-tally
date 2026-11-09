@@ -53,10 +53,10 @@ struct FocusInsightSummary: View {
     }
 }
 
-/// The words for a slice: a title saying where the list is zoomed to, then what the slice amounts to, how its PRs
-/// stand, how big they run beside the month's, and where they are. The slice is the one the list opens on, so the other
-/// metric's figure, which opens the list on today when today has any, is described as today rather than the month. Nil
-/// for the unfocused list, which is the whole month the summary already describes.
+/// The words for a slice: a title saying where the list is zoomed to, then what the slice amounts to, how fast its PRs
+/// merged and how big they run beside the month's, how the rest stand, and where they are. The slice is the one the
+/// list opens on, so the other metric's figure, which opens the list on today when today has any, is described as today
+/// rather than the month. Nil for the unfocused list, which is the whole month the summary already describes.
 struct FocusInsightText: Equatable {
     let title: String
     let lines: [String]
@@ -106,9 +106,20 @@ struct FocusInsightText: Equatable {
 
         var standing: [String] = []
         if let median = insight.medianTimeToMerge {
-            standing.append(metric == .opened
+            let merged = metric == .opened
                 ? "\(insight.merged.formatted()) merged in a median \(Self.duration(median))"
-                : "Median \(Self.duration(median)) from open to merge")
+                : "Merged in a median \(Self.duration(median))"
+            // Beside the month only when the slice is a part of it, as for size. The comparison fills a line of its
+            // own, so where the rest stand moves to the next.
+            if insight.count < insight.monthCount, let month = snapshot.medianTimeToMerge(for: metric), month > 0 {
+                let ratio = median / month
+                let monthTime = Self.duration(month)
+                lines.append("\(merged) · " + ((0.9...1.1).contains(ratio) ? "about the month's \(monthTime)"
+                    : ratio < 1 ? "faster than the month's \(monthTime)"
+                    : "\(ratio.formatted(.number.precision(.fractionLength(0...1))))× the month's \(monthTime)"))
+            } else {
+                standing.append(merged)
+            }
         }
         if insight.open > 0 { standing.append("\(insight.open.formatted()) open") }
         if insight.draft > 0 { standing.append("\(insight.draft.formatted()) draft") }

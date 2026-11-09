@@ -11,10 +11,15 @@ private let utc: Calendar = {
 private let now = utc.date(from: DateComponents(year: 2026, month: 11, day: 20))!
 private let monthStart = utc.date(from: DateComponents(year: 2026, month: 11, day: 1))!
 
-private func pr(_ id: Int, createdAt: Date, mergedAt: Date? = nil, repo: String = "me/app") -> PullRequest {
+private func pr(
+    _ id: Int, createdAt: Date, mergedAt: Date? = nil, repo: String = "me/app",
+    state: PullRequest.State? = nil, isDraft: Bool = false, review: PullRequest.ReviewDecision? = nil,
+    checks: PullRequest.ChecksState? = nil
+) -> PullRequest {
     PullRequest(
         id: "PR_\(id)", title: "PR \(id)", url: URL(string: "https://github.com/\(repo)/pull/\(id)")!,
-        createdAt: createdAt, mergedAt: mergedAt, repository: .init(nameWithOwner: repo)
+        createdAt: createdAt, mergedAt: mergedAt, repository: .init(nameWithOwner: repo), state: state, isDraft: isDraft,
+        reviewDecision: review, checks: checks
     )
 }
 
@@ -32,11 +37,18 @@ private final class FakeGitHub: Sendable {
     let departures: Set<String>
     let arriveAfter: Int
     private let arrived = Box(false)
+    /// Fields a fine-grained token may not read. A query that asks for one is answered, as GitHub does, with
+    /// the data it could read, the field null, and a FORBIDDEN error.
+    let refusing: Box<Set<String>>
+    /// The refusals sent so far, to show a refused field is asked for as few times as possible.
+    let refusals = Counter()
 
     init(
         prs: [PullRequest], failure: String? = nil, opaqueCursors: Bool = false,
-        arrivals: [PullRequest] = [], arrivalPosition: Int = 0, departures: Set<String> = [], arriveAfter: Int = 0
+        arrivals: [PullRequest] = [], arrivalPosition: Int = 0, departures: Set<String> = [], arriveAfter: Int = 0,
+        refusing: Set<String> = []
     ) {
+        self.refusing = Box(refusing)
         self.prs = prs
         self.failure = failure
         self.opaqueCursors = opaqueCursors
@@ -58,10 +70,19 @@ private final class FakeGitHub: Sendable {
                 "contributionsCollection": ["contributionCalendar": ["totalContributions": 42]],
             ]]])
         }
-        return try JSONSerialization.data(withJSONObject: ["data": ["search": search(query, after: variables["after"])]])
+        let asked = (request["query"] as! String)
+        let refused = refusing.value.filter { asked.contains($0) }
+        let reply = ["search": search(query, after: variables["after"], nulling: refused, asked: asked)]
+        guard let field = refused.sorted().first else { return try JSONSerialization.data(withJSONObject: ["data": reply]) }
+        _ = refusals.next()
+        let denial: [String: Any] = [
+            "type": "FORBIDDEN", "message": "Resource not accessible by personal access token",
+            "path": ["search", "nodes", 0, field, "nodes", 0, "commit", field],
+        ]
+        return try JSONSerialization.data(withJSONObject: ["data": reply, "errors": [denial]])
     }
 
-    private func search(_ query: String, after: String?) -> [String: Any] {
+    private func search(_ query: String, after: String?, nulling refused: Set<String> = [], asked: String = "") -> [String: Any] {
         let isCreated = query.contains("created:")
         let range = query.components(separatedBy: isCreated ? "created:" : "merged:")[1].components(separatedBy: "..")
         let from = try! Date(range[0], strategy: .iso8601)
@@ -82,13 +103,22 @@ private final class FakeGitHub: Sendable {
         return [
             "issueCount": matches.count,
             "pageInfo": ["hasNextPage": next < min(matches.count, FakeGitHub.cap), "endCursor": cursor(at: next)],
-            "nodes": page.map { pr in
-                [
+            "nodes": page.map { pr -> [String: Any] in
+                let fields: [String: Any] = [
                     "id": pr.id, "title": pr.title, "url": pr.url.absoluteString,
                     "createdAt": pr.createdAt.formatted(.iso8601),
                     "mergedAt": pr.mergedAt.map { $0.formatted(.iso8601) } as Any? ?? NSNull(),
                     "repository": ["nameWithOwner": pr.repository.nameWithOwner],
-                ] as [String: Any]
+                    "state": pr.state?.rawValue as Any? ?? NSNull(),
+                    "isDraft": pr.isDraft,
+                    "reviewDecision": pr.reviewDecision?.rawValue as Any? ?? NSNull(),
+                    // GitHub answers null for a PR with no checks, else an object.
+                    "statusCheckRollup": pr.checks.map { ["state": $0.rawValue] } as Any? ?? NSNull(),
+                ]
+                // Like GraphQL, answer only what was asked for.
+                return fields
+                    .filter { key, _ in !["reviewDecision", "statusCheckRollup"].contains(key) || asked.contains(key) }
+                    .merging(refused.map { ($0, NSNull() as Any) }) { $1 }
             },
         ]
     }
@@ -123,6 +153,12 @@ private actor Overlap {
 
 private func client(_ fake: FakeGitHub) -> GitHubClient {
     GitHubClient { try fake.respond(to: $0) }
+}
+
+/// Answers searches with `body` and the viewer lookup as a healthy GitHub would.
+private func answeringSearchWith(_ body: Data, for request: Data) throws -> Data {
+    let variables = (try JSONSerialization.jsonObject(with: request) as! [String: Any])["variables"] as! [String: String]
+    return variables["q"] == nil ? try FakeGitHub(prs: []).respond(to: request) : body
 }
 
 /// Holds back the second page until the third has been answered, as GitHub may answer pages sent together.
@@ -167,6 +203,169 @@ private func client(_ fake: FakeGitHub, overlap: Overlap) -> GitHubClient {
         let snapshot = try await client(FakeGitHub(prs: prs)).fetchSnapshot(at: now, calendar: utc)
         #expect(snapshot.count(for: .opened) == 2500)
         #expect(Set(snapshot.opened.map(\.id)).count == 2500)
+    }
+
+    @Test func carriesEachPullRequestsStateAndDraftFlag() async throws {
+        let prs = [
+            pr(1, createdAt: monthStart, state: .open),
+            pr(2, createdAt: monthStart.addingTimeInterval(60), state: .open, isDraft: true),
+            pr(3, createdAt: monthStart.addingTimeInterval(120), state: .closed),
+            pr(4, createdAt: monthStart.addingTimeInterval(180), mergedAt: monthStart.addingTimeInterval(240), state: .merged),
+        ]
+        let snapshot = try await client(FakeGitHub(prs: prs)).fetchSnapshot(at: now, calendar: utc)
+        #expect(snapshot.opened == prs)
+        #expect(snapshot.opened.map(\.state) == [.open, .open, .closed, .merged])
+        #expect(snapshot.opened.map(\.isDraft) == [false, true, false, false])
+    }
+
+    @Test func keepsStatesAcrossSplitSearchesPastTheCap() async throws {
+        // Every fifth PR is a draft, so a lost flag in any of the split ranges shows up.
+        let prs = (0..<2500).map {
+            pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 840), state: .open, isDraft: $0 % 5 == 0)
+        }
+        let snapshot = try await client(FakeGitHub(prs: prs)).fetchSnapshot(at: now, calendar: utc)
+        #expect(snapshot.opened.count == 2500)
+        #expect(snapshot.opened.filter(\.isDraft).count == 500)
+        #expect(snapshot.opened.allSatisfy { $0.state == .open })
+    }
+
+    @Test func readsAPullRequestWithoutAStateAsUnknownRatherThanOpen() throws {
+        let json = Data(#"""
+        {"id":"PR_1","title":"Old","url":"https://github.com/me/app/pull/1","createdAt":"2026-11-01T00:00:00Z",
+         "mergedAt":null,"repository":{"nameWithOwner":"me/app"}}
+        """#.utf8)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode(PullRequest.self, from: json)
+        #expect(decoded.state == nil)
+        #expect(decoded.isDraft == false)
+    }
+
+    @Test func aStateGitHubAddsLaterDoesNotFailTheFetch() throws {
+        let json = Data(#"""
+        {"id":"PR_1","title":"New","url":"https://github.com/me/app/pull/1","createdAt":"2026-11-01T00:00:00Z",
+         "mergedAt":null,"repository":{"nameWithOwner":"me/app"},"state":"QUEUED","isDraft":true}
+        """#.utf8)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode(PullRequest.self, from: json)
+        #expect(decoded.state == nil)
+        #expect(decoded.isDraft)
+    }
+
+    @Test func carriesEachPullRequestsReviewDecision() async throws {
+        let prs = [
+            pr(1, createdAt: monthStart, state: .open, review: .approved),
+            pr(2, createdAt: monthStart.addingTimeInterval(60), state: .open, review: .changesRequested),
+            pr(3, createdAt: monthStart.addingTimeInterval(120), state: .open, review: .reviewRequired),
+            pr(4, createdAt: monthStart.addingTimeInterval(180), state: .open),
+        ]
+        let snapshot = try await client(FakeGitHub(prs: prs)).fetchSnapshot(at: now, calendar: utc)
+        #expect(snapshot.opened == prs)
+        #expect(snapshot.opened.map(\.reviewDecision) == [.approved, .changesRequested, .reviewRequired, nil])
+    }
+
+    @Test func keepsReviewDecisionsAcrossSplitSearchesPastTheCap() async throws {
+        let prs = (0..<2500).map {
+            pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 840), state: .open, review: $0 % 2 == 0 ? .approved : nil)
+        }
+        let snapshot = try await client(FakeGitHub(prs: prs)).fetchSnapshot(at: now, calendar: utc)
+        #expect(snapshot.opened.count == 2500)
+        #expect(snapshot.opened.filter { $0.reviewDecision == .approved }.count == 1250)
+    }
+
+    @Test func aReviewDecisionGitHubAddsLaterReadsAsNoSignalAndOldDataHasNone() throws {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let future = Data(#"""
+        {"id":"PR_1","title":"New","url":"https://github.com/me/app/pull/1","createdAt":"2026-11-01T00:00:00Z",
+         "mergedAt":null,"repository":{"nameWithOwner":"me/app"},"state":"OPEN","reviewDecision":"SHIPPED_IT"}
+        """#.utf8)
+        let old = Data(#"""
+        {"id":"PR_1","title":"Old","url":"https://github.com/me/app/pull/1","createdAt":"2026-11-01T00:00:00Z",
+         "mergedAt":null,"repository":{"nameWithOwner":"me/app"},"state":"OPEN"}
+        """#.utf8)
+        #expect(try decoder.decode(PullRequest.self, from: future).reviewDecision == nil)
+        #expect(try decoder.decode(PullRequest.self, from: future).state == .open)
+        #expect(try decoder.decode(PullRequest.self, from: old).reviewDecision == nil)
+    }
+
+    @Test func asksGitHubForReviewDecision() async throws {
+        let queries = Box<[String]>([])
+        let fake = FakeGitHub(prs: [pr(1, createdAt: monthStart, state: .open)])
+        _ = try await GitHubClient { body in
+            let request = try JSONSerialization.jsonObject(with: body) as! [String: Any]
+            queries.value.append(request["query"] as! String)
+            return try fake.respond(to: body)
+        }.fetchSnapshot(at: now, calendar: utc)
+        let search = queries.value.filter { $0.contains("search(") }
+        #expect(!search.isEmpty)
+        #expect(search.allSatisfy { $0.contains("reviewDecision") })
+    }
+
+    @Test func carriesEachPullRequestsCheckState() async throws {
+        let prs = [
+            pr(1, createdAt: monthStart, state: .open, checks: .success),
+            pr(2, createdAt: monthStart.addingTimeInterval(60), state: .open, checks: .failure),
+            pr(3, createdAt: monthStart.addingTimeInterval(120), state: .open, checks: .pending),
+            pr(4, createdAt: monthStart.addingTimeInterval(180), state: .open, checks: .error),
+            pr(5, createdAt: monthStart.addingTimeInterval(240), state: .open),
+        ]
+        let snapshot = try await client(FakeGitHub(prs: prs)).fetchSnapshot(at: now, calendar: utc)
+        #expect(snapshot.opened == prs)
+        #expect(snapshot.opened.map(\.checks) == [.success, .failure, .pending, .error, nil])
+    }
+
+    @Test func keepsCheckStatesAcrossSplitSearchesPastTheCap() async throws {
+        let prs = (0..<2500).map {
+            pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 840), state: .open, checks: $0 % 5 == 0 ? .failure : .success)
+        }
+        let snapshot = try await client(FakeGitHub(prs: prs)).fetchSnapshot(at: now, calendar: utc)
+        #expect(snapshot.opened.count == 2500)
+        #expect(snapshot.opened.filter { $0.checks == .failure }.count == 500)
+    }
+
+    @Test func aCheckStateGitHubAddsLaterReadsAsNoSignalAndOldDataHasNone() throws {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        func decode(_ extra: String) throws -> PullRequest {
+            try decoder.decode(PullRequest.self, from: Data(#"""
+            {"id":"PR_1","title":"T","url":"https://github.com/me/app/pull/1","createdAt":"2026-11-01T00:00:00Z",
+             "mergedAt":null,"repository":{"nameWithOwner":"me/app"},"state":"OPEN"\#(extra)}
+            """#.utf8))
+        }
+        #expect(try decode(#","statusCheckRollup":{"state":"FAILURE"}"#).checks == .failure)
+        #expect(try decode(#","statusCheckRollup":{"state":"STALLED"}"#).checks == nil)
+        #expect(try decode(#","statusCheckRollup":null"#).checks == nil)
+        #expect(try decode("").checks == nil)
+        // A rollup the app can't read must not cost the PR its other facts.
+        #expect(try decode(#","statusCheckRollup":"odd""#).state == .open)
+    }
+
+    @Test func asksGitHubForTheCheckRollup() async throws {
+        let queries = Box<[String]>([])
+        let fake = FakeGitHub(prs: [pr(1, createdAt: monthStart, state: .open)])
+        _ = try await GitHubClient { body in
+            let request = try JSONSerialization.jsonObject(with: body) as! [String: Any]
+            queries.value.append(request["query"] as! String)
+            return try fake.respond(to: body)
+        }.fetchSnapshot(at: now, calendar: utc)
+        let search = queries.value.filter { $0.contains("search(") }
+        #expect(!search.isEmpty)
+        #expect(search.allSatisfy { $0.contains("statusCheckRollup { state }") })
+    }
+
+    @Test func asksGitHubForStateAndDraft() async throws {
+        let queries = Box<[String]>([])
+        let fake = FakeGitHub(prs: [pr(1, createdAt: monthStart, state: .open)])
+        _ = try await GitHubClient { body in
+            let request = try JSONSerialization.jsonObject(with: body) as! [String: Any]
+            queries.value.append(request["query"] as! String)
+            return try fake.respond(to: body)
+        }.fetchSnapshot(at: now, calendar: utc)
+        let search = queries.value.filter { $0.contains("search(") }
+        #expect(!search.isEmpty)
+        #expect(search.allSatisfy { $0.contains("state") && $0.contains("isDraft") })
     }
 
     @Test func tracksOpenedAndMergedSeparately() async throws {
@@ -266,6 +465,84 @@ private func client(_ fake: FakeGitHub, overlap: Overlap) -> GitHubClient {
         let snapshot = try await client(fake, overlap: overlap).fetchSnapshot(at: now, calendar: utc)
         #expect(Set(snapshot.opened.map(\.id)).count == 350)
         #expect(await overlap.requests == 1 + (1 + 2 + 1) + 1)
+    }
+
+    // A fine-grained token without Checks access gets FORBIDDEN for `statusCheckRollup`. The labels are
+    // decoration, so the counts must not depend on them.
+    @Test func aTokenRefusedTheChecksFieldStillGetsEveryCountAndTheOtherLabels() async throws {
+        let prs = (0..<5).map {
+            pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 60), state: .open, review: .approved, checks: .failure)
+        }
+        let fake = FakeGitHub(prs: prs, refusing: ["statusCheckRollup"])
+        let snapshot = try await client(fake).fetchSnapshot(at: now, calendar: utc)
+        #expect(snapshot.count(for: .opened) == 5)
+        #expect(snapshot.opened.allSatisfy { $0.checks == nil && $0.reviewDecision == .approved })
+    }
+
+    @Test func aTokenRefusedBothExtrasStillGetsEveryCount() async throws {
+        let prs = (0..<5).map {
+            pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 60), state: .open, review: .approved, checks: .failure)
+        }
+        let fake = FakeGitHub(prs: prs, refusing: ["statusCheckRollup", "reviewDecision"])
+        let snapshot = try await client(fake).fetchSnapshot(at: now, calendar: utc)
+        #expect(snapshot.count(for: .opened) == 5)
+        #expect(snapshot.opened.allSatisfy { $0.checks == nil && $0.reviewDecision == nil && $0.state == .open })
+    }
+
+    @Test func aRefusedFieldIsNotAskedForAgainOnceRefusedPastTheCap() async throws {
+        let prs = (0..<2500).map { pr($0, createdAt: monthStart.addingTimeInterval(Double($0) * 840), state: .open, checks: .failure) }
+        let fake = FakeGitHub(prs: prs, refusing: ["statusCheckRollup"])
+        let snapshot = try await client(fake).fetchSnapshot(at: now, calendar: utc)
+        #expect(snapshot.opened.count == 2500)
+        // The opened and merged searches each start before either has learned of the refusal.
+        #expect(fake.refusals.count <= 2)
+    }
+
+    @Test func aHappyRefreshAsksForEveryFieldAndNeverRepeatsARequest() async throws {
+        let fake = FakeGitHub(prs: [pr(1, createdAt: monthStart, state: .open, review: .approved, checks: .failure)])
+        let overlap = Overlap()
+        let snapshot = try await client(fake, overlap: overlap).fetchSnapshot(at: now, calendar: utc)
+        #expect(await overlap.requests == 3)  // viewer, opened, merged
+        #expect(fake.refusals.count == 0)
+        #expect(snapshot.opened.first?.checks == .failure)
+        #expect(snapshot.opened.first?.reviewDecision == .approved)
+    }
+
+    @Test func theNextRefreshAsksForTheExtrasAgainSoAFixedTokenGetsItsLabelsBack() async throws {
+        let prs = [pr(1, createdAt: monthStart, state: .open, checks: .failure)]
+        let fake = FakeGitHub(prs: prs, refusing: ["statusCheckRollup"])
+        let client = client(fake)
+        #expect(try await client.fetchSnapshot(at: now, calendar: utc).opened.first?.checks == nil)
+        fake.refusing.value = []
+        #expect(try await client.fetchSnapshot(at: now, calendar: utc).opened.first?.checks == .failure)
+    }
+
+    @Test func aRefusalThatIsNotAboutAnExtraFieldStillFailsTheFetch() async throws {
+        // An organization's SAML enforcement refuses a whole result, not a decorating field.
+        let body = Data(#"""
+        {"data":null,"errors":[{"type":"FORBIDDEN","path":["search","nodes",3],
+         "message":"Resource protected by organization SAML enforcement."}]}
+        """#.utf8)
+        let client = GitHubClient { try answeringSearchWith(body, for: $0) }
+        await #expect(throws: GitHubError.graphQL("Resource protected by organization SAML enforcement.")) {
+            _ = try await client.fetchSnapshot(at: now, calendar: utc)
+        }
+    }
+
+    @Test func aFieldGitHubNoLongerHasStillFailsTheFetchInsteadOfDroppingLabelsForever() async throws {
+        let body = Data(#"""
+        {"data":null,"errors":[{"type":"undefinedField","path":["query","search","nodes","statusCheckRollup"],
+         "message":"Field 'statusCheckRollup' doesn't exist on type 'PullRequest'"}]}
+        """#.utf8)
+        // Healthy once the field is left out, so a client that retried without it would hide the change.
+        let healthy = FakeGitHub(prs: [])
+        let client = GitHubClient { request in
+            let asksForIt = String(decoding: request, as: UTF8.self).contains("statusCheckRollup")
+            return asksForIt ? try answeringSearchWith(body, for: request) : try healthy.respond(to: request)
+        }
+        await #expect(throws: GitHubError.graphQL("Field 'statusCheckRollup' doesn't exist on type 'PullRequest'")) {
+            _ = try await client.fetchSnapshot(at: now, calendar: utc)
+        }
     }
 
     @Test func graphQLErrorsFailTheFetchInsteadOfUndercounting() async {

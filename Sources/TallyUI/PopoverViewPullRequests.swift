@@ -111,6 +111,7 @@ struct PullRequestList: View {
     @State private var scope: PullRequestScope
     @State private var repository: String?
     @State private var funnel: FunnelPart?
+    @State private var statusChoice: PullRequestWorkspaceStatusFilter.Choice?
     @State private var searchText = ""
 
     /// `metric` is the one the goal counts; the focus can ask for the other.
@@ -130,10 +131,15 @@ struct PullRequestList: View {
 
     var body: some View {
         let available = snapshot.listedPullRequests(for: metric, scope: scope, funnel: funnel, at: now)
-        let repositories = PullRequestWorkspaceRepositories(available, selected: repository)
-        let scoped = snapshot.listedPullRequests(
+        let inRepository = snapshot.listedPullRequests(
             for: metric, scope: scope, repository: repository, funnel: funnel, at: now
         )
+        // Each picker counts what the other has left, so a choice never offers a count the list won't show.
+        let repositories = PullRequestWorkspaceRepositories(
+            PullRequestWorkspaceStatusFilter.apply(statusChoice, to: available), selected: repository
+        )
+        let statuses = PullRequestWorkspaceStatusFilter(inRepository, selected: statusChoice)
+        let scoped = PullRequestWorkspaceStatusFilter.apply(statusChoice, to: inRepository)
         let search = PullRequestWorkspaceSearch(searchText)
         let pullRequests = search.results(in: scoped)
         VStack(alignment: .leading, spacing: 10) {
@@ -143,7 +149,14 @@ struct PullRequestList: View {
             }
             .labelsHidden()
             .pickerStyle(.segmented)
-            PullRequestWorkspaceRepositoryPicker(repositories: repositories, selection: $repository)
+            HStack(spacing: 6) {
+                PullRequestWorkspaceRepositoryPicker(repositories: repositories, selection: $repository)
+                if statuses.isOffered {
+                    PullRequestWorkspaceStatusPicker(filter: statuses, selection: $statusChoice)
+                        // Capped so the repository picker keeps room for a readable name; the menu lists full titles.
+                        .frame(maxWidth: 128)
+                }
+            }
             filters
             HStack(spacing: 6) {
                 TextField("Search title, repo, # or URL", text: $searchText)
@@ -173,7 +186,8 @@ struct PullRequestList: View {
                 PullRequestWorkspaceCopyLinksButton(pullRequests: pullRequests, pasteboard: copyLinkPasteboard)
             }
             if pullRequests.isEmpty {
-                Text(search.isActive ? "No matching PRs in this list. Try another search, change the filters, or clear the search." : emptyText)
+                Text(search.isActive ? "No matching PRs in this list. Try another search, change the filters, or clear the search."
+                     : statusChoice != nil ? "No PRs with that status in this list. Choose another status or show all statuses." : emptyText)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 60)
@@ -245,6 +259,9 @@ struct PullRequestList: View {
 
     private func row(_ pr: PullRequest) -> some View {
         let date = (metric == .opened ? pr.createdAt : pr.mergedAt) ?? pr.createdAt
+        let status = PullRequestWorkspaceStatus.badge(for: pr, metric: metric)
+        let review = PullRequestWorkspaceReview.badge(for: pr, metric: metric)
+        let checks = PullRequestWorkspaceChecks.badge(for: pr, metric: metric)
         return HStack(spacing: 6) {
             Link(destination: pr.url) {
                 VStack(alignment: .leading, spacing: 1) {
@@ -255,7 +272,19 @@ struct PullRequestList: View {
                     HStack(spacing: 4) {
                         Text(pr.repository.nameWithOwner).lineLimit(1).truncationMode(.head)
                         Spacer(minLength: 4)
-                        Text(snapshot.window.rowTime(date, withDay: scope == .month)).monospacedDigit()
+                        if let status {
+                            Text(status.label).font(.caption2.weight(.medium)).foregroundStyle(status.tint)
+                                .lineLimit(1).fixedSize()
+                        }
+                        if let review {
+                            Text(review.label).font(.caption2.weight(.medium)).foregroundStyle(review.tint)
+                                .lineLimit(1).fixedSize()
+                        }
+                        if let checks {
+                            Text(checks.label).font(.caption2.weight(.medium)).foregroundStyle(checks.tint)
+                                .lineLimit(1).fixedSize()
+                        }
+                        Text(snapshot.window.rowTime(date, withDay: scope == .month)).monospacedDigit().lineLimit(1).fixedSize()
                     }
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -266,7 +295,9 @@ struct PullRequestList: View {
             }
             .buttonStyle(.plain)
             .help(pr.title)
-            .accessibilityLabel("\(pr.title), \(pr.repository.nameWithOwner)")
+            .accessibilityLabel(
+                [pr.title, pr.repository.nameWithOwner, status?.label, review?.label, checks?.label].compactMap { $0 }.joined(separator: ", ")
+            )
             PullRequestWorkspaceCopyLinkButton(pullRequest: pr, pasteboard: copyLinkPasteboard)
                 .frame(width: 24, height: 24)
         }

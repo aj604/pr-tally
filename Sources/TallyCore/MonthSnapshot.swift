@@ -6,20 +6,94 @@ public struct PullRequest: Sendable, Equatable, Decodable, Identifiable {
         public init(nameWithOwner: String) { self.nameWithOwner = nameWithOwner }
     }
 
+    /// GitHub's own word for where a PR stands.
+    public enum State: String, Sendable, Equatable, Decodable {
+        case open = "OPEN"
+        case closed = "CLOSED"
+        case merged = "MERGED"
+    }
+
+    /// Where review stands on a PR whose repository asks for reviews.
+    public enum ReviewDecision: String, Sendable, Equatable, Decodable {
+        case approved = "APPROVED"
+        case changesRequested = "CHANGES_REQUESTED"
+        case reviewRequired = "REVIEW_REQUIRED"
+    }
+
+    /// How the latest commit's checks and statuses stand, in GitHub's words.
+    public enum ChecksState: String, Sendable, Equatable, Decodable {
+        case success = "SUCCESS"
+        case pending = "PENDING"
+        case expected = "EXPECTED"
+        case failure = "FAILURE"
+        case error = "ERROR"
+    }
+
     public let id: String
     public let title: String
     public let url: URL
     public let createdAt: Date
     public let mergedAt: Date?
     public let repository: Repository
+    /// Nil when GitHub didn't say, as for a snapshot saved before this was fetched, or a state this app
+    /// doesn't know. Nil means "unknown", never "open".
+    public let state: State?
+    /// Only meaningful while `state` is open: GitHub keeps the flag on a PR after it merges or closes.
+    public let isDraft: Bool
+    /// Nil when GitHub reports none: the repository doesn't require reviews, or the snapshot predates this field.
+    /// Nil means "no signal", never "approved" or "unreviewed".
+    public let reviewDecision: ReviewDecision?
+    /// Nil when the PR has no checks or statuses at all, or the snapshot predates this field, or GitHub used a state
+    /// this app doesn't know. Nil means "no signal", never "passing".
+    public let checks: ChecksState?
 
-    public init(id: String, title: String, url: URL, createdAt: Date, mergedAt: Date?, repository: Repository) {
+    public init(
+        id: String, title: String, url: URL, createdAt: Date, mergedAt: Date?, repository: Repository,
+        state: State? = nil, isDraft: Bool = false, reviewDecision: ReviewDecision? = nil,
+        checks: ChecksState? = nil
+    ) {
         self.id = id
         self.title = title
         self.url = url
         self.createdAt = createdAt
         self.mergedAt = mergedAt
         self.repository = repository
+        self.state = state
+        self.isDraft = isDraft
+        self.reviewDecision = reviewDecision
+        self.checks = checks
+    }
+
+    private struct ChecksRollup: Decodable {
+        let state: ChecksState?
+
+        init(from decoder: Decoder) throws {
+            state = (try? decoder.container(keyedBy: CodingKeys.self).decodeIfPresent(ChecksState.self, forKey: .state)) ?? nil
+        }
+
+        private enum CodingKeys: String, CodingKey { case state }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, url, createdAt, mergedAt, repository, state, isDraft, reviewDecision, statusCheckRollup
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        url = try container.decode(URL.self, forKey: .url)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        mergedAt = try container.decodeIfPresent(Date.self, forKey: .mergedAt)
+        repository = try container.decode(Repository.self, forKey: .repository)
+        // A state added to GitHub later must not fail the whole refresh, so it reads as unknown.
+        state = (try? container.decodeIfPresent(State.self, forKey: .state)) ?? nil
+        isDraft = try container.decodeIfPresent(Bool.self, forKey: .isDraft) ?? false
+        // Same tolerance as `state`: a decision GitHub adds later reads as no signal.
+        reviewDecision = (try? container.decodeIfPresent(ReviewDecision.self, forKey: .reviewDecision)) ?? nil
+        // GitHub nests the state in a rollup object that is null for a PR without checks.
+        let rollup = (try? container.decodeIfPresent(ChecksRollup.self, forKey: .statusCheckRollup)) ?? nil
+        checks = rollup?.state
     }
 }
 

@@ -12,10 +12,12 @@ private func date(_ month: Int, _ day: Int, hour: Int = 0) -> Date {
     newYork.date(from: DateComponents(year: 2026, month: month, day: day, hour: hour))!
 }
 
-private func pullRequest(id: String = UUID().uuidString, opened: Date, merged: Date?) -> PullRequest {
+private func pullRequest(
+    id: String = UUID().uuidString, opened: Date, merged: Date?, state: PullRequest.State? = nil, isDraft: Bool = false
+) -> PullRequest {
     PullRequest(
         id: id, title: "A change", url: URL(string: "https://github.com/a/b/pull/1")!,
-        createdAt: opened, mergedAt: merged, repository: .init(nameWithOwner: "a/b")
+        createdAt: opened, mergedAt: merged, repository: .init(nameWithOwner: "a/b"), state: state, isDraft: isDraft
     )
 }
 
@@ -175,6 +177,54 @@ private func funnel(opened: [PullRequest], merged: [PullRequest]) -> MergeFunnel
         let snapshot = month(opened: [waiting, waiting], merged: [])
         #expect(snapshot.notMergedPullRequests.map(\.id) == ["waiting"])
         #expect(snapshot.mergeFunnel.notMerged == 1)
+    }
+
+    // Where the not-merged PRs stand now: still open, or closed without merging.
+
+    @Test func theNotMergedSplitIntoStillOpenAndClosed() {
+        let landed = pullRequest(opened: date(11, 2), merged: date(11, 3), state: .merged)
+        let open = pullRequest(opened: date(11, 4), merged: nil, state: .open)
+        let draft = pullRequest(opened: date(11, 5), merged: nil, state: .open, isDraft: true)
+        let closed = pullRequest(opened: date(11, 6), merged: nil, state: .closed)
+        let result = funnel(opened: [landed, open, draft, closed], merged: [landed])
+        #expect(result.stillOpen == 2)
+        #expect(result.closedWithoutMerging == 1)
+        #expect(result.notMerged == 3)
+    }
+
+    @Test func aMergeOrAnOlderPRIsNeverStillOpen() {
+        // A stale opened copy still says open, but the merged list has it merged.
+        let stale = pullRequest(id: "same", opened: date(11, 2, hour: 1), merged: nil, state: .open)
+        let fresh = pullRequest(id: "same", opened: date(11, 2, hour: 1), merged: date(11, 2, hour: 2), state: .merged)
+        let olderStillOpen = pullRequest(opened: date(10, 2), merged: nil, state: .open)
+        let waiting = pullRequest(opened: date(11, 4), merged: nil, state: .open)
+        let result = funnel(opened: [stale, olderStillOpen, waiting, waiting], merged: [fresh])
+        #expect(result.stillOpen == 1)
+        #expect(result.closedWithoutMerging == 0)
+    }
+
+    @Test func anUnknownStateLeavesTheSplitOutRatherThanGuess() {
+        let open = pullRequest(opened: date(11, 4), merged: nil, state: .open)
+        let unknown = pullRequest(opened: date(11, 5), merged: nil)
+        let result = funnel(opened: [open, unknown], merged: [])
+        #expect(result.notMerged == 2)
+        #expect(result.stillOpen == nil)
+        #expect(result.closedWithoutMerging == nil)
+    }
+
+    @Test func aMergeAfterAnEndedMonthIsNeitherOpenNorClosed() {
+        let mergedNextMonth = pullRequest(opened: date(11, 2), merged: date(12, 1), state: .merged)
+        let closed = pullRequest(opened: date(11, 3), merged: nil, state: .closed)
+        let result = funnel(opened: [mergedNextMonth, closed], merged: [])
+        #expect(result.notMerged == 2)
+        #expect(result.stillOpen == nil)
+    }
+
+    @Test func everythingMergedSplitsIntoNothing() {
+        let landed = pullRequest(opened: date(11, 2), merged: date(11, 3), state: .merged)
+        let result = funnel(opened: [landed], merged: [landed])
+        #expect(result.stillOpen == 0)
+        #expect(result.closedWithoutMerging == 0)
     }
 
     // The PRs behind the carried-in figure, which the popover lists when it is clicked.

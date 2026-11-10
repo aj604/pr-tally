@@ -14,6 +14,13 @@ public struct MergeFunnel: Sendable, Equatable {
     /// Middle time from opening to merging, in seconds, across everything merged this month.
     public let medianTimeToMerge: TimeInterval?
 
+    /// Of `notMerged`, the PRs GitHub still has open, drafts included: the ones that can yet merge.
+    /// Nil, as is `closedWithoutMerging`, while any of them has a state this snapshot doesn't know, as for one saved
+    /// before states were fetched, so the two always add up to `notMerged` when they're there.
+    public let stillOpen: Int?
+    /// Of `notMerged`, the PRs closed without merging. Nil whenever `stillOpen` is.
+    public let closedWithoutMerging: Int?
+
     /// PRs opened this month with no merge yet, whether still open or closed without merging.
     public var notMerged: Int { opened - openedAndMerged }
 
@@ -35,11 +42,18 @@ extension MonthSnapshot {
         if !times.isEmpty {
             median = (times[(times.count - 1) / 2] + times[times.count / 2]) / 2
         }
+        let notMerged = notMerged(besides: landed)
+        let stillOpen = notMerged.filter { $0.state == .open }.count
+        let closed = notMerged.filter { $0.state == .closed }.count
+        // A state of merged here is a merge after this month, from a month that has ended: neither open nor closed.
+        let known = stillOpen + closed == notMerged.count
         return MergeFunnel(
-            opened: openedAndMerged.count + notMerged(besides: landed).count,
+            opened: openedAndMerged.count + notMerged.count,
             openedAndMerged: openedAndMerged.count,
             carriedIn: carriedIn.count,
-            medianTimeToMerge: median
+            medianTimeToMerge: median,
+            stillOpen: known ? stillOpen : nil,
+            closedWithoutMerging: known ? closed : nil
         )
     }
 

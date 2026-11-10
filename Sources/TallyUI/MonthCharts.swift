@@ -281,16 +281,29 @@ struct MergeFunnelSummary: View {
                     .monospacedDigit()
             }
             if let rate = funnel.mergeRate {
+                let text = MergeFunnelText(funnel: funnel)
                 GeometryReader { geometry in
                     ZStack(alignment: .leading) {
                         Capsule().fill(.quaternary)
+                        // Still open follows merged in a lighter tint: those can yet merge, unlike the closed rest.
+                        if let reach = text.reach, reach > rate {
+                            Capsule()
+                                .fill(Color.accentColor.opacity(0.35))
+                                .frame(width: max(geometry.size.width * reach, 4))
+                        }
                         Capsule()
                             .fill(Color.accentColor)
                             .frame(width: rate > 0 ? max(geometry.size.width * rate, 4) : 0)
                     }
                 }
                 .frame(height: 4)
-                .help("\(funnel.notMerged.formatted()) not merged, either still open or closed")
+                .help(text.help)
+                if let split = text.split {
+                    Text(split)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
             }
         }
         .accessibilityElement(children: .combine)
@@ -322,6 +335,32 @@ struct MergeFunnelSummary: View {
         return Duration.seconds(seconds).formatted(
             .units(allowed: [.days, .hours, .minutes], width: .narrow, maximumUnitCount: 1)
         )
+    }
+}
+
+/// Where this month's unmerged PRs stand: how many can still merge, and how many closed without merging. Without it,
+/// an early merge rate reads as a failure rate when most of what was opened is only waiting on review.
+struct MergeFunnelText: Equatable {
+    /// The line under the bar, or nil when nothing is unmerged or their states aren't known.
+    let split: String?
+    let help: String
+    /// Portion of the month's opened PRs merged or still open, where the bar's lighter segment ends. Nil without a split.
+    let reach: Double?
+
+    init(funnel: MergeFunnel) {
+        guard funnel.notMerged > 0, let open = funnel.stillOpen, let closed = funnel.closedWithoutMerging else {
+            split = nil
+            reach = nil
+            help = "\(funnel.notMerged.formatted()) not merged, either still open or closed"
+            return
+        }
+        split = [
+            open > 0 ? "\(open.formatted()) still open" : nil,
+            closed > 0 ? "\(closed.formatted()) closed without merging" : nil,
+        ].compactMap { $0 }.joined(separator: " · ")
+        reach = Double(funnel.openedAndMerged + open) / Double(funnel.opened)
+        help = "\(funnel.openedAndMerged.formatted()) merged, \(open.formatted()) still open, "
+            + "\(closed.formatted()) closed without merging"
     }
 }
 

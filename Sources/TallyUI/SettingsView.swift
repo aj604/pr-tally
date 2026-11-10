@@ -80,14 +80,11 @@ struct SettingsView: View {
     private var token: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("GitHub login").font(.callout)
-            Text(
-                hasSavedToken
-                    ? "Using the token saved in your keychain."
-                    : "Using your gh login. To use a different account, save a classic token with the `repo` scope, authorized for any SSO orgs."
-            )
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+            let status = store.workflowLoginStatus(usesSavedToken: hasSavedToken)
+            Text(LocalizedStringKey(status.text))
+                .font(.caption)
+                .foregroundStyle(status.isWarning ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                .fixedSize(horizontal: false, vertical: true)
             HStack {
                 SecureField("Personal access token", text: $tokenDraft)
                     .textFieldStyle(.roundedBorder)

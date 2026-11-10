@@ -120,6 +120,9 @@ public final class TallyStore {
     private var dayChanges = 0
     /// Counts saved or cleared tokens, so a fetch made with the login they replaced is thrown away. See `loginChanged()`.
     @ObservationIgnored private var loginChanges = 0
+    /// Whether a token has been saved or cleared since the last good refresh, so the numbers on screen, and
+    /// the login they name, are still the replaced one's. See `workflowLoginStatus(usesSavedToken:)`.
+    private(set) var loginUnconfirmed = false
 
     public init(
         defaults: UserDefaults = .standard, cache: SnapshotCache? = nil,
@@ -322,6 +325,7 @@ public final class TallyStore {
             stalledSince = nil
             failedRefreshes = 0
             lastFailure = nil
+            loginUnconfirmed = false
             // The wait was for a failure that is over, such as a rate limit lifted by a new token. Without this the
             // next automatic refresh could be an hour away.
             if sleepingOnFailure, schedule != nil { startSchedule() }
@@ -352,6 +356,7 @@ public final class TallyStore {
     /// reported against the new one. It is thrown away and the fetch made again.
     public func loginChanged() async {
         loginChanges += 1
+        loginUnconfirmed = true
         await refresh()
     }
 

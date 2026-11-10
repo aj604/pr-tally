@@ -8,6 +8,7 @@ The menu bar shows a progress ring for the month next to today's count. The ring
 - How far ahead or behind pace you are, PRs needed per day from the start of today (so it holds steady as you work), how many more today needs ("4 more today"), and your projected month-end total
 - A marker when today's count beats the daily quota (goal ÷ days in the month), even if you're still behind pace. "N more today" stays beside it while today is still short of its share of the goal
 - A running total chart and daily bars (hover for any day's numbers, click one to list that day's PRs)
+- With a goal of merged PRs, the merges still needed weighed against this month's PRs still open (drafts included), under the likely finish: "Merges to go: 15 · 22 still open could cover them", or "22 still open, 18 more to open" when they can't. PRs opened before this month aren't counted, and the line waits until a refresh has fetched every PR's state
 - Days that beat the daily quota have green bars, with a dashed line at the quota when it fits beside them, and a count of how many days this month beat it ("Beat the daily quota on 4 of 9 days"). Today counts once it beats the quota, so a quiet morning isn't a miss
 - A dated best-day shortcut, plus current and best activity streaks within the month
 - Recent activity over up to seven completed days in this month, compared with the preceding seven once fourteen full days exist; today is excluded

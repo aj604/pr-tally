@@ -8,6 +8,7 @@ The menu bar shows a progress ring for the month next to today's count. The ring
 - How far ahead or behind pace you are, PRs needed per day from the start of today (so it holds steady as you work), how many more today needs ("4 more today"), and your projected month-end total
 - A marker when today's count beats the daily quota (goal ÷ days in the month), even if you're still behind pace. "N more today" stays beside it while today is still short of its share of the goal
 - A running total chart and daily bars (hover for any day's numbers, click one to list that day's PRs)
+- Days that beat the daily quota have green bars, with a dashed line at the quota when it fits beside them, and a count of how many days this month beat it ("Beat the daily quota on 4 of 9 days"). Today counts once it beats the quota, so a quiet morning isn't a miss
 - A dated best-day shortcut, plus current and best activity streaks within the month
 - Recent activity over up to seven completed days in this month, compared with the preceding seven once fourteen full days exist; today is excluded
 - A dated goal-hit shortcut that lists the PRs from the day the current goal was first reached

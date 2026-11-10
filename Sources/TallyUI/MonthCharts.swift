@@ -22,6 +22,9 @@ struct MonthCharts: View {
     private var daily: [Int] { snapshot.dailyCounts(for: metric) }
     private var cumulative: [Int] { snapshot.cumulativeCounts(for: metric, through: now) }
     private var projection: MonthProjection? { snapshot.projection(for: metric, at: now) }
+    private var quotaDays: MonthInsightQuotaDays? {
+        MonthInsightQuotaDays(snapshot: snapshot, metric: metric, goal: goal, at: now)
+    }
     /// The plot makes room for a projection past the goal, but not so much that a lumpy early month flattens the line.
     private var yMax: Int {
         max(projection?.ceiling(goal: goal) ?? goal, cumulative.last ?? 0, 1)
@@ -58,6 +61,9 @@ struct MonthCharts: View {
                 dailyBars.frame(height: 62)
                 MonthInsightActivitySummary(snapshot: snapshot, metric: metric, now: now)
                 MonthInsightStreakSummary(snapshot: snapshot, metric: metric, now: now)
+                if let quotaDays {
+                    MonthInsightQuotaDaysSummary(quotaDays: quotaDays, metric: metric, goal: goal, window: snapshot.window)
+                }
             }
         }
     }
@@ -135,20 +141,29 @@ struct MonthCharts: View {
         }
     }
 
+    /// Days that beat the daily quota are green, as today's count is in the menu bar once it does, against a dashed
+    /// line at the quota: the per-day form of the steady pace above.
     private var dailyBars: some View {
-        Chart {
+        let quotaDays = quotaDays
+        let scale = MonthInsightQuotaDaysText.scale(tallest: daily.max() ?? 0, quota: quotaDays?.quota ?? 0)
+        return Chart {
             ForEach(Array(daily.enumerated()), id: \.offset) { index, count in
                 if count > 0 {
                     BarMark(x: .value("Day", Double(index + 1)), y: .value("Count", count), width: .fixed(6))
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(quotaDays?.beat(day: index) == true ? Color.green : Color.accentColor)
                         .cornerRadius(2)
                         .opacity(hoveredDay == nil || hoveredDay == index + 1 ? 1 : 0.35)
                 }
             }
+            if let rule = scale.rule {
+                RuleMark(y: .value("Quota", rule))
+                    .foregroundStyle(Self.neutral)
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            }
             hoverRule
         }
         .chartXScale(domain: xDomain)
-        .chartYScale(domain: 0...max(daily.max() ?? 0, 1))
+        .chartYScale(domain: 0...scale.top)
         .chartXAxis {
             AxisMarks(values: [1, 8, 15, 22].map(Double.init)) { value in
                 AxisValueLabel { Text(Int(value.as(Double.self) ?? 0), format: .number) }
@@ -161,7 +176,11 @@ struct MonthCharts: View {
             }
         }
         .daySelection($hoveredDay, dayCount: dayCount, select: select)
-        .accessibilityLabel("Pull requests per day" + (hoverCaption.map { ". \($0)" } ?? ""))
+        .accessibilityLabel(
+            "Pull requests per day"
+                + (quotaDays.map { ". \(MonthInsightQuotaDaysText(quotaDays: $0, metric: metric, goal: goal, window: snapshot.window).summary)" } ?? "")
+                + (hoverCaption.map { ". \($0)" } ?? "")
+        )
     }
 
     /// Days with nothing counted have nothing to list.

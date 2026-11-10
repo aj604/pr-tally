@@ -6,6 +6,8 @@ public enum MenuBarGlyph {
     private static let size: CGFloat = 18
     private static let lineWidth: CGFloat = 2.6
     private static let titleSpacing: CGFloat = 4
+    /// Track left showing between the arc's ends until the goal is reached: two pixels on a Retina menu bar.
+    private static let closingGap: CGFloat = 1
     // The menu bar takes on the wallpaper's tint, so a fixed gray can vanish. These follow the text color.
     // Computed on every draw: `withAlphaComponent` fixes the label color to the appearance it's called in.
     private static var track: NSColor { NSColor.labelColor.withAlphaComponent(0.3) }
@@ -64,7 +66,13 @@ public enum MenuBarGlyph {
 
         if pace.fraction > 0 {
             // A floor keeps a small count visible; the round caps do the rest.
-            let sweep = 360 * max(pace.fraction, 0.02)
+            var sweep = 360 * max(pace.fraction, 0.02)
+            if pace.status != .goalHit {
+                // The caps reach past both ends of the arc, so from about 94% a ring short of the goal would
+                // close and look like the goal reached. Until it is, a gap stays open where the ring closes.
+                let gap = (lineWidth + closingGap) / radius * 180 / .pi
+                sweep = min(sweep, 360 - gap)
+            }
             let arc = NSBezierPath()
             arc.appendArc(withCenter: center, radius: radius, startAngle: 90, endAngle: 90 - sweep, clockwise: true)
             arc.lineWidth = lineWidth

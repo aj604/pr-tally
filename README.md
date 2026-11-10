@@ -16,7 +16,7 @@ The menu bar shows a progress ring for the month next to today's count. The ring
 
 In the PR list, choose a repository or search titles and repository names. Use `#123`, `owner/repository#123`, or a pasted PR URL for exact lookup. Search stays within the selected day, repository, metric, and merge-funnel filters. **Copy link** copies one PR's URL; **Copy links** copies every matching URL, one per line in list order, including rows beyond the scroll viewport.
 
-Opened and merged PRs each keep their own monthly goal. Switch metrics in Settings to edit the matching target; the planning preview shows its daily average, remaining PRs, and how many more are needed today. Existing installations start both targets at the previously saved goal.
+Opened and merged PRs each keep their own monthly goal. Switch metrics in Settings to edit the matching target; the planning preview shows its daily average, remaining PRs, and how many more are needed today. Once this month's numbers are in, it also compares the goal you're typing with your pace so far: "On track" when that pace ends the month at or past the goal, or "Short of the goal" with how many a day reaching it takes for the days left. After the first week, **Set goal to N** sets the goal to where this month's pace ends, to raise a goal you're beating or lower one you can't reach. Existing installations start both targets at the previously saved goal.
 
 The popover always reopens on the numbers, even if you closed it on the list or in settings.
 

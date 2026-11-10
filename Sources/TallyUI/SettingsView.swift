@@ -50,7 +50,7 @@ struct SettingsView: View {
             Text("Opened and merged PRs each keep their own monthly goal.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            WorkflowGoalPreview(plan: store.workflowGoalPlan())
+            WorkflowGoalPreview(plan: store.workflowGoalPlan()) { store.goal = $0 }
             WorkflowMenuBarSettings(store: store)
             WorkflowRefreshSettings(store: store)
             Toggle("Notify when I hit my goal", isOn: $store.notifiesOnGoal)

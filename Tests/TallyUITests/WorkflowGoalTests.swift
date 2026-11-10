@@ -289,6 +289,101 @@ private final class WorkflowGoalDefaults: UserDefaults, @unchecked Sendable {
         #expect(fetched.fired)
     }
 
+    // The outlook's figures depend on how much of the month has passed, which a daylight-saving change in the
+    // machine's zone would shift by an hour, so these use a fixed one.
+    private static let utc: Calendar = {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        return calendar
+    }()
+
+    private func outlookDate(day: Int) -> Date {
+        Self.utc.date(from: DateComponents(year: 2026, month: 11, day: day, hour: 12))!
+    }
+
+    /// 450 PRs opened before today and 20 today, in November 2026 on the fixed calendar.
+    private func outlookStore(day: Int = 16, goal: Int) async -> TallyStore {
+        let now = outlookDate(day: day)
+        let window = MonthWindow(containing: now, calendar: Self.utc)
+        let yesterday = Self.utc.date(byAdding: .day, value: -1, to: now)!
+        func prs(_ count: Int, at date: Date) -> [PullRequest] {
+            (0..<count).map {
+                PullRequest(
+                    id: "\(date)-\($0)", title: "Fixture", url: URL(string: "https://github.com/me/app/pull/1")!,
+                    createdAt: date, mergedAt: nil, repository: .init(nameWithOwner: "me/app")
+                )
+            }
+        }
+        let snapshot = MonthSnapshot(
+            login: "fixture", window: window, opened: prs(450, at: yesterday) + prs(20, at: now), merged: [],
+            totalContributions: 0, fetchedAt: now
+        )
+        let store = TallyStore(defaults: WorkflowGoalDefaults()) { snapshot }
+        await store.refresh()
+        store.goal = goal
+        return store
+    }
+
+    @Test func aGoalThePaceFallsShortOfSaysWhatReachingItTakes() async {
+        let store = await outlookStore(goal: 1000)
+        let plan = store.workflowGoalPlan(at: outlookDate(day: 16), calendar: Self.utc)
+        // 470 in 15.5 days is 30.3 a day, or 910 by the 30th; 550 more over the 15 days from this morning is 36.7.
+        #expect(
+            plan.outlookText
+                == "Short of the goal: 30.3 a day so far ends the month near 910. Reaching it takes 36.7 a day for the 15 days left."
+        )
+        #expect(plan.suggestedGoal == 910)
+    }
+
+    @Test func takingTheSuggestionPutsTheGoalOnTrackAndStopsSuggestingIt() async throws {
+        let store = await outlookStore(goal: 1000)
+        let now = outlookDate(day: 16)
+        store.goal = try #require(store.workflowGoalPlan(at: now, calendar: Self.utc).suggestedGoal)
+        let plan = store.workflowGoalPlan(at: now, calendar: Self.utc)
+        #expect(store.goal == 910)
+        #expect(plan.outlookText == "On track: 30.3 a day so far ends the month near 910.")
+        #expect(plan.suggestedGoal == nil)
+    }
+
+    @Test func aGoalBelowThePaceIsOnTrackAndSuggestsRaisingIt() async {
+        for goal in [600, 400] {
+            let store = await outlookStore(goal: goal)
+            let plan = store.workflowGoalPlan(at: outlookDate(day: 16), calendar: Self.utc)
+            #expect(plan.outlookText == "On track: 30.3 a day so far ends the month near 910.")
+            #expect(plan.suggestedGoal == 910)
+        }
+    }
+
+    @Test(arguments: [(5, false), (7, false), (8, true)])
+    func thePaceIsOfferedAsAGoalOnlyOnceAWeekIsOver(day: Int, suggests: Bool) async {
+        let store = await outlookStore(day: day, goal: 5000)
+        let plan = store.workflowGoalPlan(at: outlookDate(day: day), calendar: Self.utc)
+        #expect(plan.outlookText?.hasPrefix("Short of the goal: ") == true)
+        #expect((plan.suggestedGoal != nil) == suggests)
+    }
+
+    @Test func theLastDayAsksForTheRestToday() async {
+        let store = await outlookStore(day: 30, goal: 1000)
+        let plan = store.workflowGoalPlan(at: outlookDate(day: 30), calendar: Self.utc)
+        // 470 in 29.5 days is 15.9 a day, or 478 by tonight.
+        #expect(
+            plan.outlookText
+                == "Short of the goal: 15.9 a day so far ends the month near 478. Reaching it takes 550 today, the last day."
+        )
+        #expect(plan.suggestedGoal == 478)
+    }
+
+    @Test func thereIsNoOutlookWithoutThisMonthsNumbers() async {
+        let empty = store().workflowGoalPlan(at: outlookDate(day: 16), calendar: Self.utc)
+        #expect(empty.outlookText == nil)
+        #expect(empty.suggestedGoal == nil)
+        let store = await outlookStore(goal: 1000)
+        let december = Self.utc.date(from: DateComponents(year: 2026, month: 12, day: 16, hour: 12))!
+        let rolledOver = store.workflowGoalPlan(at: december, calendar: Self.utc)
+        #expect(rolledOver.outlookText == nil)
+        #expect(rolledOver.suggestedGoal == nil)
+    }
+
 }
 
 

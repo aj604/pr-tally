@@ -8,6 +8,32 @@ public enum TokenSource: Sendable, Equatable {
     case githubCLI
 }
 
+/// Whether a classic token can read private repos, going by the scopes GitHub lists in `X-OAuth-Scopes` when
+/// answering it. Search leaves out what a token can't read without an error, so one without `repo` counts only PRs
+/// in public repos. `public_repo` and `repo:status` don't cover private ones.
+public enum TokenScopes {
+    public typealias Load = @Sendable (URLRequest) async throws -> (Data, URLResponse)
+
+    /// Nil when GitHub doesn't say: a fine-grained token, which has no scopes, a rejected token, or no answer.
+    public static func readsPrivateRepos(
+        _ token: String, load: Load = { try await URLSession.shared.data(for: $0) }
+    ) async -> Bool? {
+        var request = URLRequest(url: URL(string: "https://api.github.com/user")!)
+        request.setValue("bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("PRTally", forHTTPHeaderField: "User-Agent")
+        guard let (_, response) = try? await load(request), let response = response as? HTTPURLResponse,
+            response.statusCode == 200
+        else { return nil }
+        return readsPrivateRepos(scopes: response.value(forHTTPHeaderField: "X-OAuth-Scopes"))
+    }
+
+    static func readsPrivateRepos(scopes header: String?) -> Bool? {
+        // A classic token with no scopes gets the header, empty.
+        guard let header else { return nil }
+        return header.split(separator: ",").contains { $0.trimmingCharacters(in: .whitespaces) == "repo" }
+    }
+}
+
 /// Finds a GitHub token: a saved override first, then the `gh` CLI's login.
 public actor TokenProvider {
     /// How long a token read from the CLI is reused. Long enough that a refresh normally reads once,

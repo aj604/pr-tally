@@ -141,6 +141,13 @@ public final class TallyStore {
         }
     }
 
+    /// Whether GitHub says the saved token lacks the `repo` scope, so its counts leave out private repos with no
+    /// error. Until a token is saved or cleared, an answer that says nothing, such as while offline, keeps the last.
+    /// See `checkSavedToken(_:)`.
+    private(set) var savedTokenSkipsPrivateRepos = false
+    /// Asks GitHub whether a token can read private repos, replaced in tests.
+    @ObservationIgnored var tokenScopes: @Sendable (String) async -> Bool? = { await TokenScopes.readsPrivateRepos($0) }
+
     public init(
         defaults: UserDefaults = .standard, cache: SnapshotCache? = nil,
         notify: (@MainActor (Milestone) -> Void)? = nil, network: NetworkStatus = .system, fetch: @escaping Fetch
@@ -380,7 +387,18 @@ public final class TallyStore {
         loginChanges += 1
         loginUnconfirmed = true
         loginFailure = nil
+        savedTokenSkipsPrivateRepos = false
         await refresh()
+    }
+
+    /// Asks GitHub what the token saved in Settings can read. A refresh can't tell: a token without the `repo`
+    /// scope searches fine, and its count is just short. An answer that arrives after the token was replaced is
+    /// about the old one and is dropped.
+    func checkSavedToken(_ token: String) async {
+        let loginChangesAtStart = loginChanges
+        let readsPrivateRepos = await tokenScopes(token)
+        guard loginChanges == loginChangesAtStart, let readsPrivateRepos else { return }
+        savedTokenSkipsPrivateRepos = !readsPrivateRepos
     }
 
     /// Tells the user once when a goal is reached, rather than on every refresh that finds it reached. Both

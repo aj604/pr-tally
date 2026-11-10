@@ -218,4 +218,79 @@ private actor Replies {
         #expect(text(.unauthorized(.githubCLI)).contains("rejected your gh login"))
         #expect(text(.unauthorized(.saved)).contains("clear it to use your gh login"))
     }
+
+    private func store(_ replies: Replies, readsPrivateRepos: Bool?) -> TallyStore {
+        let store = store(replies)
+        store.tokenScopes = { _ in readsPrivateRepos }
+        return store
+    }
+
+    /// The refresh succeeds and names the account, so this is the only sign its count leaves out private repos.
+    @Test func aSavedTokenWithoutRepoScopeIsAWarningThoughItsRefreshesWork() async {
+        let store = store(Replies([.success(snapshot(login: "alice"))]), readsPrivateRepos: false)
+        await store.refresh()
+        await store.checkSavedToken("ghp_public")
+        let status = store.workflowLoginStatus(usesSavedToken: true)
+        #expect(status.state == .counting(login: "alice"))
+        #expect(status.isWarning)
+        #expect(status.text.hasPrefix("Counting only PRs in public repos for @alice: "))
+        #expect(status.text.contains("doesn't have the `repo` scope"))
+        // Clearing the token goes back to gh, whose scopes this said nothing about.
+        #expect(!store.workflowLoginStatus(usesSavedToken: false).isWarning)
+    }
+
+    @Test func aSavedTokenWithRepoScopeIsCountedAsBefore() async {
+        let store = store(Replies([.success(snapshot(login: "alice"))]), readsPrivateRepos: true)
+        await store.refresh()
+        await store.checkSavedToken("ghp_private")
+        let status = store.workflowLoginStatus(usesSavedToken: true)
+        #expect(!status.isWarning)
+        #expect(status.text == "Counting PRs for @alice with the token saved in your keychain.")
+    }
+
+    @Test func aMissingScopeIsSaidBeforeAnyNumbersArrive() async {
+        let store = store(Replies([.failure(GitHubError.http(502))]), readsPrivateRepos: false)
+        await store.checkSavedToken("ghp_public")
+        #expect(store.workflowLoginStatus(usesSavedToken: true).text.hasPrefix(
+            "The token saved in your keychain doesn't have the `repo` scope, so PRs in private repos won't be counted."))
+    }
+
+    /// A rejection is what to fix first, and a token just saved is the old one's finding until checked again.
+    @Test func aRejectionOrANewTokenReplacesTheScopeWarning() async {
+        let store = store(Replies([.failure(GitHubError.unauthorized(.saved)), .success(snapshot(login: "bob"))]),
+            readsPrivateRepos: false)
+        await store.checkSavedToken("ghp_public")
+        await store.refresh()
+        #expect(store.workflowLoginStatus(usesSavedToken: true).state == .unusable(.unauthorized(.saved)))
+        #expect(store.workflowLoginStatus(usesSavedToken: true).text.hasPrefix("GitHub rejected"))
+        await store.loginChanged()
+        #expect(!store.workflowLoginStatus(usesSavedToken: true).isWarning)
+    }
+
+    /// Settings checks again on each opening; offline, the last answer stands rather than reading as fixed.
+    @Test func noAnswerKeepsTheLastFinding() async {
+        let store = store(Replies([.success(snapshot(login: "alice"))]), readsPrivateRepos: false)
+        await store.checkSavedToken("ghp_public")
+        store.tokenScopes = { _ in nil }
+        await store.checkSavedToken("ghp_public")
+        #expect(store.savedTokenSkipsPrivateRepos)
+    }
+
+    /// The old token's answer, arriving after a new one was saved, says nothing about the new one.
+    @Test func aCheckOfAReplacedTokenIsDropped() async throws {
+        let store = store(Replies([.success(snapshot(login: "bob"))]))
+        let gate = AsyncStream<Void>.makeStream()
+        let asked = AsyncStream<Void>.makeStream()
+        store.tokenScopes = { _ in
+            asked.continuation.yield()
+            for await _ in gate.stream { break }
+            return false
+        }
+        let checking = Task { await store.checkSavedToken("ghp_old") }
+        for await _ in asked.stream { break }
+        await store.loginChanged()
+        gate.continuation.yield()
+        await checking.value
+        #expect(!store.savedTokenSkipsPrivateRepos)
+    }
 }

@@ -11,6 +11,8 @@ struct SettingsView: View {
     @State private var hasSavedToken: Bool
     @State private var savedTokenIsFineGrained: Bool
     @State private var tokenFailed = false
+    /// Counts saved and cleared tokens, so the saved one's scopes are checked again.
+    @State private var tokenChanges = 0
     @State private var notificationsDenied = false
 
     /// `savedToken` is only looked at for what kind of token it is, and defaults to the keychain's.
@@ -104,6 +106,11 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+        // On every opening too, since a classic token's scopes can be changed on GitHub without changing the token.
+        .task(id: tokenChanges) {
+            guard hasSavedToken, let token = KeychainToken.standard.read() else { return }
+            await store.checkSavedToken(token)
+        }
     }
 
     private func row(_ title: String, @ViewBuilder control: () -> some View) -> some View {
@@ -121,6 +128,7 @@ struct SettingsView: View {
         savedTokenIsFineGrained = Self.isFineGrained(token)
         tokenDraft = ""
         hasSavedToken = true
+        tokenChanges += 1
         Task { await store.loginChanged() }
     }
 
@@ -128,6 +136,7 @@ struct SettingsView: View {
         KeychainToken.standard.delete()
         hasSavedToken = false
         savedTokenIsFineGrained = false
+        tokenChanges += 1
         Task { await store.loginChanged() }
     }
 

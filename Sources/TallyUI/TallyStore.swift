@@ -77,6 +77,8 @@ public final class TallyStore {
         static let menuBarDisplay = "workflowMenuBarDisplay"
         static let automaticRefreshPaused = "workflowAutomaticRefreshPaused"
         static let automaticRefreshResumeAt = "workflowAutomaticRefreshResumeAt"
+        static let loginUnconfirmed = "workflowLoginUnconfirmed"
+        static let loginFailure = "workflowLoginFailure"
         /// The goals announced this month, each named by month, metric and number. See `announceGoal(from:to:)`.
         static let goalAnnounced = "goalAnnounced"
     }
@@ -121,8 +123,23 @@ public final class TallyStore {
     /// Counts saved or cleared tokens, so a fetch made with the login they replaced is thrown away. See `loginChanged()`.
     @ObservationIgnored private var loginChanges = 0
     /// Whether a token has been saved or cleared since the last good refresh, so the numbers on screen, and
-    /// the login they name, are still the replaced one's. See `workflowLoginStatus(usesSavedToken:)`.
-    private(set) var loginUnconfirmed = false
+    /// the login they name, are still the replaced one's. See `workflowLoginStatus(usesSavedToken:)`. Kept across
+    /// relaunch, since the saved numbers are still the replaced login's then too.
+    private(set) var loginUnconfirmed: Bool {
+        didSet {
+            guard loginUnconfirmed != oldValue else { return }
+            defaults.set(loginUnconfirmed, forKey: Keys.loginUnconfirmed)
+        }
+    }
+    /// Why GitHub can't be asked with the login in use, until a refresh succeeds or the token changes. Apart from
+    /// `lastFailure`, which waiting for the network clears though the login is no better, and kept across relaunch
+    /// so one that starts offline doesn't name the account these numbers were counted for as working.
+    private(set) var loginFailure: GitHubError? {
+        didSet {
+            guard loginFailure != oldValue else { return }
+            defaults.set(loginFailure.flatMap(WorkflowLoginStatus.savedName(of:)), forKey: Keys.loginFailure)
+        }
+    }
 
     public init(
         defaults: UserDefaults = .standard, cache: SnapshotCache? = nil,
@@ -155,6 +172,8 @@ public final class TallyStore {
         if deadline == nil || pauseExpired { defaults.set(nil, forKey: Keys.automaticRefreshResumeAt) }
         menuBarDisplay = defaults.string(forKey: Keys.menuBarDisplay)
             .flatMap(WorkflowMenuBarDisplay.init(rawValue:)) ?? .today
+        loginUnconfirmed = defaults.object(forKey: Keys.loginUnconfirmed) as? Bool ?? false
+        loginFailure = defaults.string(forKey: Keys.loginFailure).flatMap(WorkflowLoginStatus.loginFailure(named:))
     }
 
     public var count: Int? { currentSnapshot()?.count(for: metric) }
@@ -326,6 +345,7 @@ public final class TallyStore {
             failedRefreshes = 0
             lastFailure = nil
             loginUnconfirmed = false
+            loginFailure = nil
             // The wait was for a failure that is over, such as a rate limit lifted by a new token. Without this the
             // next automatic refresh could be an hour away.
             if sleepingOnFailure, schedule != nil { startSchedule() }
@@ -335,6 +355,8 @@ public final class TallyStore {
             errorMessage = error.localizedDescription
             failedRefreshes += 1
             lastFailure = error
+            // Other failures say nothing about the login, so a rejection found earlier still stands.
+            if let error = error as? GitHubError, WorkflowLoginStatus.savedName(of: error) != nil { loginFailure = error }
             stalled()
         } catch {
             // The login it failed with has been replaced, so it says nothing about the one now in use.
@@ -357,6 +379,7 @@ public final class TallyStore {
     public func loginChanged() async {
         loginChanges += 1
         loginUnconfirmed = true
+        loginFailure = nil
         await refresh()
     }
 

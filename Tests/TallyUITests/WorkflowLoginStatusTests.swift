@@ -141,6 +141,69 @@ private actor Replies {
         #expect(state(store) == .counting(login: "bob"))
     }
 
+    /// Saving a new token replaces the old one's rejection, whether or not the new one can be checked yet.
+    @Test func aNewLoginIsNotWarnedAboutForTheOldOnesRejection() async {
+        let store = store(Replies([.failure(GitHubError.unauthorized(.githubCLI)), .failure(GitHubError.http(502))]))
+        await store.refresh()
+        await store.loginChanged()
+        #expect(state(store) == .unconfirmed)
+    }
+
+    /// Waiting for the network forgets the last failure for retries, but the login GitHub turned down is no better.
+    @Test func goingOfflineKeepsARejectionShown() async {
+        let store = store(Replies([.success(snapshot(login: "alice")), .failure(GitHubError.unauthorized(.saved))]))
+        await store.refresh()
+        await store.refresh()
+        await store.networkChanged(isOnline: false)
+        await store.refreshIfStale(now: Date().addingTimeInterval(10 * 60))
+        #expect(store.errorMessage == TallyStore.offlineMessage)
+        #expect(store.workflowLoginStatus(usesSavedToken: true).state == .unusable(.unauthorized(.saved)))
+    }
+
+    /// A relaunch shows the saved numbers, which are still the replaced login's until one of its refreshes succeeds.
+    @Test func anUncheckedLoginStaysUncheckedAfterRelaunch() async throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: "PRTallyTests/\(UUID().uuidString)/snapshot.json")
+        let defaults = LoginStatusDefaults()
+        let first = TallyStore(defaults: defaults, cache: SnapshotCache(url: url)) {
+            throw GitHubError.http(502)
+        }
+        let before = TallyStore(defaults: defaults, cache: SnapshotCache(url: url)) { snapshot(login: "alice") }
+        await before.refresh()
+        await first.loginChanged()
+        #expect(state(first) == .unconfirmed)
+
+        let replies = Replies([.failure(GitHubError.http(502)), .success(snapshot(login: "bob"))])
+        let relaunched = TallyStore(defaults: defaults, cache: SnapshotCache(url: url)) { try await replies.fetch() }
+        #expect(relaunched.snapshot?.login == "alice")
+        #expect(state(relaunched) == .unconfirmed)
+        await replies.holdTheNextFetch()
+        let launchRefresh = Task { await relaunched.refresh() }
+        while await !replies.isHolding { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(state(relaunched) == .checking)
+        await replies.release()
+        await launchRefresh.value
+        #expect(state(relaunched) == .unconfirmed)
+        await relaunched.refresh()
+        #expect(state(relaunched) == .counting(login: "bob"))
+
+        let again = TallyStore(defaults: defaults, cache: SnapshotCache(url: url)) { throw CancellationError() }
+        #expect(state(again) == .counting(login: "bob"))
+    }
+
+    /// A launch that starts offline would otherwise name the account these numbers were counted for as working.
+    @Test(arguments: [GitHubError.noGitHubCLI, .noToken, .unauthorized(.githubCLI), .unauthorized(.saved)])
+    func aRejectionIsStillShownAfterRelaunch(error: GitHubError) async {
+        let defaults = LoginStatusDefaults()
+        let first = TallyStore(defaults: defaults) { throw error }
+        await first.refresh()
+        let relaunched = TallyStore(defaults: defaults) { snapshot(login: "alice") }
+        #expect(state(relaunched) == .unusable(error))
+        await relaunched.refresh()
+        #expect(state(relaunched) == .counting(login: "alice"))
+        // No numbers are saved without a cache, so all a cleared rejection leaves is which login is used.
+        #expect(state(TallyStore(defaults: defaults) { throw CancellationError() }) == .unknown)
+    }
+
     @Test func theGhLoginKeepsTheAdviceForUsingAnotherAccount() {
         let status = WorkflowLoginStatus(usesSavedToken: false, state: .counting(login: "alice"))
         #expect(status.text == "Counting PRs for @alice with your gh login. \(WorkflowLoginStatus.tokenAdvice)")

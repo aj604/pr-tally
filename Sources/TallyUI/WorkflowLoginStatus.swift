@@ -63,18 +63,28 @@ extension TallyStore {
     }
 
     private var workflowLoginState: WorkflowLoginStatus.State {
-        // Checked first: until this refresh ends, the failure on record is the replaced login's.
         if loginUnconfirmed, isRefreshing { return .checking }
-        if let error = lastFailure as? GitHubError, Self.isLoginFailure(error) { return .unusable(error) }
+        if let loginFailure { return .unusable(loginFailure) }
         if loginUnconfirmed { return .unconfirmed }
         return snapshot.map { .counting(login: $0.login) } ?? .unknown
     }
+}
 
-    /// Failures that are about the login itself, rather than GitHub or the network, which say nothing about it.
-    private static func isLoginFailure(_ error: GitHubError) -> Bool {
+extension WorkflowLoginStatus {
+    /// How a failure about the login itself is saved for the next launch. Nil for the rest, which are about GitHub
+    /// or the network and say nothing about the login.
+    static func savedName(of error: GitHubError) -> String? {
         switch error {
-        case .noToken, .noGitHubCLI, .unauthorized: true
-        case .http, .graphQL, .rateLimited, .notGitHub: false
+        case .noToken: "noToken"
+        case .noGitHubCLI: "noGitHubCLI"
+        case .unauthorized(.saved): "unauthorizedSaved"
+        case .unauthorized(.githubCLI): "unauthorizedGitHubCLI"
+        case .http, .graphQL, .rateLimited, .notGitHub: nil
         }
+    }
+
+    static func loginFailure(named name: String) -> GitHubError? {
+        [GitHubError.noToken, .noGitHubCLI, .unauthorized(.saved), .unauthorized(.githubCLI)]
+            .first { savedName(of: $0) == name }
     }
 }

@@ -8,6 +8,7 @@ public enum MenuBarGlyph {
     private static let titleSpacing: CGFloat = 4
     /// Track left showing between the arc's ends until the goal is reached: two pixels on a Retina menu bar.
     private static let closingGap: CGFloat = 1
+    private static let tickWidth: CGFloat = 1.5
     // The menu bar takes on the wallpaper's tint, so a fixed gray can vanish. These follow the text color.
     // Computed on every draw: `withAlphaComponent` fixes the label color to the appearance it's called in.
     private static var track: NSColor { NSColor.labelColor.withAlphaComponent(0.3) }
@@ -64,15 +65,16 @@ public enum MenuBarGlyph {
 
         guard let pace else { return }
 
+        // The caps reach past both ends of the arc, so from about 94% a ring short of the goal would close and
+        // look like the goal reached. Until it is, a gap stays open where the ring closes, in degrees.
+        let capAngle = lineWidth / 2 / radius * 180 / .pi
+        let gapAngle = closingGap / radius * 180 / .pi
+        let fullSweep = 360 * max(pace.fraction, 0.02)
+        let closing = pace.status != .goalHit && fullSweep > 360 - 2 * capAngle - gapAngle
+
         if pace.fraction > 0 {
             // A floor keeps a small count visible; the round caps do the rest.
-            var sweep = 360 * max(pace.fraction, 0.02)
-            if pace.status != .goalHit {
-                // The caps reach past both ends of the arc, so from about 94% a ring short of the goal would
-                // close and look like the goal reached. Until it is, a gap stays open where the ring closes.
-                let gap = (lineWidth + closingGap) / radius * 180 / .pi
-                sweep = min(sweep, 360 - gap)
-            }
+            let sweep = closing ? 360 - 2 * capAngle - gapAngle : fullSweep
             let arc = NSBezierPath()
             arc.appendArc(withCenter: center, radius: radius, startAngle: 90, endAngle: 90 - sweep, clockwise: true)
             arc.lineWidth = lineWidth
@@ -82,13 +84,23 @@ public enum MenuBarGlyph {
         }
 
         if pace.status != .goalHit, pace.goal > 0 {
-            let angle = (90 - 360 * min(Double(pace.expected) / Double(pace.goal), 1)) * .pi / 180
             let inner = radius - lineWidth / 2 - 0.5
             let outer = radius + lineWidth / 2 + 0.5
+            var degrees = 90 - 360 * min(Double(pace.expected) / Double(pace.goal), 1)
+            if closing {
+                // Late in the month the tick would fill the gap and close the ring after all. It moves to the
+                // nearer side of the gap instead, a few percent from where it belongs, which the clamped arc
+                // can't show finely anyway.
+                let half = tickWidth / 2 / inner * 180 / .pi
+                let lower = -270 + capAngle - half
+                let upper = -270 + capAngle + gapAngle + half
+                if degrees > lower, degrees < upper { degrees = degrees - lower < upper - degrees ? lower : upper }
+            }
+            let angle = degrees * .pi / 180
             let mark = NSBezierPath()
             mark.move(to: NSPoint(x: center.x + inner * cos(angle), y: center.y + inner * sin(angle)))
             mark.line(to: NSPoint(x: center.x + outer * cos(angle), y: center.y + outer * sin(angle)))
-            mark.lineWidth = 1.5
+            mark.lineWidth = tickWidth
             tick.setStroke()
             mark.stroke()
         }

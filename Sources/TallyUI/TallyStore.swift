@@ -118,6 +118,8 @@ public final class TallyStore {
     private var started = false
     /// Read by everything that depends on today's date, so it redraws at midnight even if the refresh then fails.
     private var dayChanges = 0
+    /// Counts saved or cleared tokens, so a fetch made with the login they replaced is thrown away. See `loginChanged()`.
+    @ObservationIgnored private var loginChanges = 0
 
     public init(
         defaults: UserDefaults = .standard, cache: SnapshotCache? = nil,
@@ -306,10 +308,13 @@ public final class TallyStore {
         missedRefresh = false
         let dayChangesAtStart = dayChanges
         let networkReturnsAtStart = networkReturns
+        let loginChangesAtStart = loginChanges
         do {
             // Runs apart from whoever asked: closing the popover cancels its `.task`, and changing the
             // interval cancels the schedule, but the numbers are still wanted either way.
             let fetched = try await Task { try await fetch() }.value
+            // Counted as a login since replaced, so dropped like that login's failures below.
+            guard loginChanges == loginChangesAtStart else { throw CancellationError() }
             let previous = snapshot
             snapshot = fetched
             errorMessage = nil
@@ -322,19 +327,32 @@ public final class TallyStore {
             if sleepingOnFailure, schedule != nil { startSchedule() }
             cache?.save(fetched)
             announceGoal(from: previous, to: fetched)
-        } catch {
+        } catch where loginChanges == loginChangesAtStart {
             errorMessage = error.localizedDescription
             failedRefreshes += 1
             lastFailure = error
             stalled()
+        } catch {
+            // The login it failed with has been replaced, so it says nothing about the one now in use.
         }
         isRefreshing = false
         refreshWaiters.forEach { $0.resume() }
         refreshWaiters = []
+        // The user asked for the new login's numbers, which a pause doesn't hold back any more than Refresh now.
+        if loginChanges != loginChangesAtStart { return await refresh() }
         // A fetch that spanned midnight may have come back with the month that just ended, and one that failed
         // may have failed only because the network was still coming back.
         let failedBeforeNetworkReturned = errorMessage != nil && isOnline && networkReturns != networkReturnsAtStart
         if !automaticRefreshPaused, dayChanges != dayChangesAtStart || failedBeforeNetworkReturned { await refresh() }
+    }
+
+    /// Fetches with a token just saved or cleared. A refresh already under way keeps the credentials it started
+    /// with to the end, so what it brings back belongs to the login being replaced: its numbers would show, be
+    /// saved and announce goals as the new login's, and its failure, such as the old token's rejection, would be
+    /// reported against the new one. It is thrown away and the fetch made again.
+    public func loginChanged() async {
+        loginChanges += 1
+        await refresh()
     }
 
     /// Tells the user once when a goal is reached, rather than on every refresh that finds it reached. Both

@@ -124,14 +124,14 @@ struct SettingsView: View {
         savedTokenIsFineGrained = Self.isFineGrained(token)
         tokenDraft = ""
         hasSavedToken = true
-        Task { await store.refresh() }
+        Task { await store.loginChanged() }
     }
 
     private func clearToken() {
         KeychainToken.standard.delete()
         hasSavedToken = false
         savedTokenIsFineGrained = false
-        Task { await store.refresh() }
+        Task { await store.loginChanged() }
     }
 
     private func setLaunchAtLogin(_ enabled: Bool) {

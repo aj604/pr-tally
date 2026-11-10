@@ -61,6 +61,8 @@ It checks with `gh` about once a minute, so `gh auth switch` takes effect on the
 
 To use a different account, save a token in settings; it's stored in your keychain. Use a classic token with the `repo` scope, authorized for any SSO orgs. A fine-grained token covers one account or org, so if your PRs are in private repos under more than one, counts can come up short with no error. Settings warns you when it sees one.
 
+Saving or clearing a token refreshes with the new login right away, even while automatic refresh is paused. If a refresh was already under way, as it often is just after you open the popover, its numbers or error belong to the old login: the app drops them and fetches again, so the old account's count never shows, isn't saved, and can't send a goal notification.
+
 A saved token always wins over `gh`. If GitHub rejects your token, the error says whether it was the saved one or your `gh` login, so when a saved token expires, save a new one or remove it; running `gh auth login` again won't help.
 
 If a refresh fails with "GitHub returned HTTP 403:" and a message, the message is GitHub's own reason, such as an organization IP allow list or an SSO org your token isn't authorized for. If it says something other than GitHub answered, a network filter or proxy is intercepting requests to api.github.com.

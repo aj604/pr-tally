@@ -11,10 +11,11 @@ private let newYork: Calendar = {
 private let window = MonthWindow(containing: newYork.date(from: DateComponents(year: 2026, month: 11, day: 1))!, calendar: newYork)
 private let now = newYork.date(from: DateComponents(year: 2026, month: 11, day: 11, hour: 12))!
 
-/// Ten completed days of `perDay`, then nothing yet today.
+/// Ten completed days of `perDay`, then half that by noon today. With nothing yet today, the rate across every day
+/// would sag below that of the completed days and sit at the bottom of the range, not inside it.
 private func projection(perDay: Int, in days: Int = 10) -> MonthProjection {
-    let daily = Array(repeating: perDay, count: days) + Array(repeating: 0, count: 30 - days)
-    return MonthProjection(count: perDay * days, daily: daily, window: window, at: now)!
+    let daily = Array(repeating: perDay, count: days) + [perDay / 2] + Array(repeating: 0, count: 29 - days)
+    return MonthProjection(count: perDay * days + perDay / 2, daily: daily, window: window, at: now)!
 }
 
 @Suite struct MonthInsightOutlookTests {

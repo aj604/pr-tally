@@ -43,10 +43,42 @@ private func projection(_ daily: [Int], at now: Date) -> MonthProjection? {
         func half(_ result: MonthProjection, t: Double) -> Double {
             t * result.dailyDeviation * (result.daysLeft * (1 + result.daysLeft / result.daysElapsed)).squareRoot()
         }
+        // A Sunday and two weekdays are too few to rate weekdays and weekends apart, so one rate gives the range.
         let three = projection([10, 30, 50, 0], at: date(11, 4, hour: 1))!
+        #expect(three.split == nil)
         #expect(abs(three.band(at: 1).upperBound - Double(three.expected) - half(three, t: 1.886)) < 1e-9)
-        let four = projection([10, 30, 50, 30, 0], at: date(11, 5, hour: 1))!
-        #expect(abs(four.band(at: 1).upperBound - Double(four.expected) - half(four, t: 1.638)) < 1e-9)
+        // Rating two kinds of day costs a degree of freedom.
+        #expect(projection([10, 30, 50, 30, 0], at: date(11, 5, hour: 1))?.split?.multiplier == 1.886)
+        #expect(projection([10, 30, 50, 30, 20, 0], at: date(11, 6, hour: 1))?.split?.multiplier == 1.638)
+    }
+
+    @Test func quietWeekendsDoNotWidenTheRange() {
+        // Six on each weekday and none at weekends, with half of Tuesday the 10th gone and 3 in so far. The weekdays
+        // left (the rest of today and 14 more) put the finish at 39 + 6 * 14.5 = 126. One rate for every day read
+        // the empty weekends as noise and gave 90–160.
+        let result = projection([0, 6, 6, 6, 6, 6, 0, 0, 6, 3], at: date(11, 10, hour: 12))!
+        #expect(result.split?.weekendRate == 0)
+        #expect(result.low <= 126 && 126 <= result.high)
+        #expect(result.high - result.low < 20)
+        for step in 0...12 {
+            let progress = Double(step) / 12
+            #expect(result.band(at: progress).contains(39 + Double(result.expected - 39) * progress))
+        }
+    }
+
+    @Test func beforeTheFirstWeekendTheRangeAllowsForAnEmptyOne() {
+        // June 2026 starts on a Monday. Ten a day over its first five weekdays, at noon on the first Saturday: with
+        // empty weekends it ends near 50 + 10 * 17 = 220, and with busy ones near the 273 one rate projects.
+        let june = MonthWindow(containing: date(6, 1), calendar: newYork)
+        let daily = [4, 16, 6, 14, 10] + Array(repeating: 0, count: 25)
+        let result = MonthProjection(count: 50, daily: daily, window: june, at: date(6, 6, hour: 12))!
+        #expect(result.split != nil)
+        #expect(result.split?.weekendRate == nil)
+        #expect(result.low <= 220)
+        // The top is still the one rate's, spread and all: 4 degrees of freedom.
+        #expect(result.expected == 273)
+        let half = 1.533 * result.dailyDeviation * (result.daysLeft * (1 + result.daysLeft / result.daysElapsed)).squareRoot()
+        #expect(abs(result.band(at: 1).upperBound - 273 - half) < 1e-9)
     }
 
     @Test func variableDaysGiveARangeAroundTheExpectedFinish() {
@@ -150,6 +182,28 @@ private func projection(_ daily: [Int], at now: Date) -> MonthProjection? {
             }
             let coverage = Double(inside) / Double(trials)
             #expect(abs(coverage - 0.8) < 0.05, "coverage after \(completed) days was \(coverage)")
+        }
+    }
+
+    /// With ten a weekday and one a weekend day, one rate for every day landed inside 43% of the time four days into
+    /// a month starting on a Monday, and 99% of the time with a range twice as wide by day 10 of November.
+    @Test func monthsWithQuietWeekendsFinishInsideTheRangeAboutEightyPercentOfTheTime() {
+        var random = SplitMix64(seed: 7)
+        let trials = 1500
+        for (month, completed, expected) in [(6, 4, 0.8...0.97), (11, 10, 0.75...0.9), (11, 20, 0.75...0.9)] {
+            let window = MonthWindow(containing: date(month, 1), calendar: newYork)
+            let weekend = (0..<window.dayCount).map { newYork.isDateInWeekend(date(month, $0 + 1, hour: 12)) }
+            var inside = 0
+            for _ in 0..<trials {
+                let days = weekend.map { random.poisson($0 ? 1 : 10) }
+                var daily = Array(days.prefix(completed)) + [random.binomial(days[completed], 0.5)]
+                daily += Array(repeating: 0, count: window.dayCount - daily.count)
+                let now = date(month, completed + 1, hour: 12)
+                let result = MonthProjection(count: daily.reduce(0, +), daily: daily, window: window, at: now)!
+                if result.low <= days.reduce(0, +), days.reduce(0, +) <= result.high { inside += 1 }
+            }
+            let coverage = Double(inside) / Double(trials)
+            #expect(expected.contains(coverage), "coverage after \(completed) days of month \(month) was \(coverage)")
         }
     }
 }

@@ -60,6 +60,7 @@ This builds the app, copies it to `~/Applications/PR Tally.app`, and launches it
 - **What's included:** every PR you authored that your token can see, in any repo and any state, including drafts and closed-unmerged PRs. Private repos need the `repo` scope, and SSO-protected orgs need the token authorized. A token that can't see your private repos undercounts with no error.
 - **Past 1,000:** GitHub search stops at 1,000 results per query, so the app splits the month into smaller ranges and stays exact past that.
 - **Contributions:** GitHub's profile-graph total for the month, which covers more than PRs.
+- **Likely finish:** the chart's range for where the month ends rates weekdays and weekends apart once a weekend has passed, so quiet weekends don't make it wider or carry five weekdays' rate across the weekends to come. Before the month's first weekend, it allows for that weekend being anywhere from as busy as the weekdays to empty. It always includes the **On track for** figure, which still extends one rate across every day.
 
 ## Refreshing
 

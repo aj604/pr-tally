@@ -12,9 +12,9 @@ private let newYork: Calendar = {
 private let window = MonthWindow(containing: newYork.date(from: DateComponents(year: 2026, month: 11, day: 1))!, calendar: newYork)
 private let now = newYork.date(from: DateComponents(year: 2026, month: 11, day: 11, hour: 12))!
 
-/// Ten completed days of ten PRs: a finish of about 300, with a range around it.
+/// Ten completed days of ten PRs and five by noon today: a finish of about 300, with a range around it.
 private let projection = MonthProjection(
-    count: 100, daily: Array(repeating: 10, count: 10) + Array(repeating: 0, count: 20), window: window, at: now
+    count: 105, daily: Array(repeating: 10, count: 10) + [5] + Array(repeating: 0, count: 19), window: window, at: now
 )!
 
 @Suite struct MonthInsightOutlookTextTests {

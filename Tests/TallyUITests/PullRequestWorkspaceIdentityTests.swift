@@ -106,7 +106,7 @@ import TallyCore
         defer { window.orderOut(nil) }
         await settle(host)
         let field = try #require(descendants(of: host).compactMap { $0 as? NSTextField }.first { $0.placeholderString != nil })
-        let picker = try #require(descendants(of: host).compactMap { $0 as? NSPopUpButton }.first)
+        let picker = try #require(descendants(of: host).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Repository" })
         let scope = try #require(descendants(of: host).compactMap { $0 as? NSSegmentedControl }.first)
 
         await search("#42", field: field, host: host)

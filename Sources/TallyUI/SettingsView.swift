@@ -11,6 +11,8 @@ struct SettingsView: View {
     @State private var hasSavedToken: Bool
     @State private var savedTokenIsFineGrained: Bool
     @State private var tokenFailed = false
+    /// Counts saved and cleared tokens, so the saved one's scopes are checked again.
+    @State private var tokenChanges = 0
     @State private var notificationsDenied = false
 
     /// `savedToken` is only looked at for what kind of token it is, and defaults to the keychain's.
@@ -23,7 +25,7 @@ struct SettingsView: View {
     /// GitHub's default new token is fine-grained, which belongs to one user or org. Whether search then leaves
     /// out private repos under other owners is undocumented, so the warning says "can".
     static func isFineGrained(_ token: String) -> Bool {
-        token.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("github_pat_")
+        TokenScopes.isFineGrained(token)
     }
 
     static let fineGrainedWarning =
@@ -50,7 +52,7 @@ struct SettingsView: View {
             Text("Opened and merged PRs each keep their own monthly goal.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            WorkflowGoalPreview(plan: store.workflowGoalPlan())
+            WorkflowGoalPreview(plan: store.workflowGoalPlan()) { store.goal = $0 }
             WorkflowMenuBarSettings(store: store)
             WorkflowRefreshSettings(store: store)
             Toggle("Notify when I hit my goal", isOn: $store.notifiesOnGoal)
@@ -80,14 +82,11 @@ struct SettingsView: View {
     private var token: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("GitHub login").font(.callout)
-            Text(
-                hasSavedToken
-                    ? "Using the token saved in your keychain."
-                    : "Using your gh login. To use a different account, save a classic token with the `repo` scope, authorized for any SSO orgs."
-            )
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+            let status = store.workflowLoginStatus(usesSavedToken: hasSavedToken)
+            Text(LocalizedStringKey(status.text))
+                .font(.caption)
+                .foregroundStyle(status.isWarning ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                .fixedSize(horizontal: false, vertical: true)
             HStack {
                 SecureField("Personal access token", text: $tokenDraft)
                     .textFieldStyle(.roundedBorder)
@@ -107,6 +106,11 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+        // On every opening too, since a classic token's scopes and SSO authorizations change on GitHub, not here.
+        .task(id: tokenChanges) {
+            guard hasSavedToken, let token = KeychainToken.standard.read() else { return }
+            await store.checkSavedToken(token)
+        }
     }
 
     private func row(_ title: String, @ViewBuilder control: () -> some View) -> some View {
@@ -124,14 +128,16 @@ struct SettingsView: View {
         savedTokenIsFineGrained = Self.isFineGrained(token)
         tokenDraft = ""
         hasSavedToken = true
-        Task { await store.refresh() }
+        tokenChanges += 1
+        Task { await store.loginChanged() }
     }
 
     private func clearToken() {
         KeychainToken.standard.delete()
         hasSavedToken = false
         savedTokenIsFineGrained = false
-        Task { await store.refresh() }
+        tokenChanges += 1
+        Task { await store.loginChanged() }
     }
 
     private func setLaunchAtLogin(_ enabled: Bool) {

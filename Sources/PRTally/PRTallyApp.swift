@@ -20,6 +20,7 @@ struct PRTallyApp: App {
             PopoverView(store: store)
         } label: {
             let title = store.menuBarTitle()
+            let tooltip = store.menuBarTooltip()
             HStack(spacing: 4) {
                 if store.automaticRefreshPaused {
                     Image(systemName: "pause.fill")
@@ -34,7 +35,17 @@ struct PRTallyApp: App {
                 }
             }
             .accessibilityLabel(store.menuBarAccessibilityLabel)
+            // SwiftUI's `help` doesn't reach a menu bar item; the tip has to go on its status bar button.
+            .task(id: tooltip) { Self.statusBarButton()?.toolTip = tooltip }
         }
         .menuBarExtraStyle(.window)
+    }
+
+    /// The menu bar item's button. `MenuBarExtra` doesn't expose it, but it's the app's only status item.
+    @MainActor private static func statusBarButton() -> NSStatusBarButton? {
+        func button(in view: NSView) -> NSStatusBarButton? {
+            view as? NSStatusBarButton ?? view.subviews.lazy.compactMap(button(in:)).first
+        }
+        return NSApp.windows.lazy.compactMap { $0.contentView.flatMap(button(in:)) }.first
     }
 }

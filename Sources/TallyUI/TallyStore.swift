@@ -77,6 +77,8 @@ public final class TallyStore {
         static let menuBarDisplay = "workflowMenuBarDisplay"
         static let automaticRefreshPaused = "workflowAutomaticRefreshPaused"
         static let automaticRefreshResumeAt = "workflowAutomaticRefreshResumeAt"
+        static let loginUnconfirmed = "workflowLoginUnconfirmed"
+        static let loginFailure = "workflowLoginFailure"
         /// The goals announced this month, each named by month, metric and number. See `announceGoal(from:to:)`.
         static let goalAnnounced = "goalAnnounced"
     }
@@ -118,6 +120,36 @@ public final class TallyStore {
     private var started = false
     /// Read by everything that depends on today's date, so it redraws at midnight even if the refresh then fails.
     private var dayChanges = 0
+    /// Counts saved or cleared tokens, so a fetch made with the login they replaced is thrown away. See `loginChanged()`.
+    @ObservationIgnored private var loginChanges = 0
+    /// Whether a token has been saved or cleared since the last good refresh, so the numbers on screen, and
+    /// the login they name, are still the replaced one's. See `workflowLoginStatus(usesSavedToken:)`. Kept across
+    /// relaunch, since the saved numbers are still the replaced login's then too.
+    private(set) var loginUnconfirmed: Bool {
+        didSet {
+            guard loginUnconfirmed != oldValue else { return }
+            defaults.set(loginUnconfirmed, forKey: Keys.loginUnconfirmed)
+        }
+    }
+    /// Why GitHub can't be asked with the login in use, until a refresh succeeds or the token changes. Apart from
+    /// `lastFailure`, which waiting for the network clears though the login is no better, and kept across relaunch
+    /// so one that starts offline doesn't name the account these numbers were counted for as working.
+    private(set) var loginFailure: GitHubError? {
+        didSet {
+            guard loginFailure != oldValue else { return }
+            defaults.set(loginFailure.flatMap(WorkflowLoginStatus.savedName(of:)), forKey: Keys.loginFailure)
+        }
+    }
+
+    /// Whether GitHub says the saved token lacks the `repo` scope, so its counts leave out private repos with no
+    /// error. Until a token is saved or cleared, an answer that says nothing, such as while offline, keeps the last.
+    /// See `checkSavedToken(_:)`.
+    private(set) var savedTokenSkipsPrivateRepos = false
+    /// How many SAML SSO organizations GitHub says the saved token isn't authorized for, so its counts leave out
+    /// their PRs with no error. Kept and cleared like `savedTokenSkipsPrivateRepos`.
+    private(set) var savedTokenUnauthorizedSSOOrganizations = 0
+    /// Asks GitHub what a token's searches leave out, replaced in tests.
+    @ObservationIgnored var tokenReach: @Sendable (String) async -> TokenReach? = { await TokenScopes.reach($0) }
 
     public init(
         defaults: UserDefaults = .standard, cache: SnapshotCache? = nil,
@@ -150,6 +182,8 @@ public final class TallyStore {
         if deadline == nil || pauseExpired { defaults.set(nil, forKey: Keys.automaticRefreshResumeAt) }
         menuBarDisplay = defaults.string(forKey: Keys.menuBarDisplay)
             .flatMap(WorkflowMenuBarDisplay.init(rawValue:)) ?? .today
+        loginUnconfirmed = defaults.object(forKey: Keys.loginUnconfirmed) as? Bool ?? false
+        loginFailure = defaults.string(forKey: Keys.loginFailure).flatMap(WorkflowLoginStatus.loginFailure(named:))
     }
 
     public var count: Int? { currentSnapshot()?.count(for: metric) }
@@ -306,10 +340,13 @@ public final class TallyStore {
         missedRefresh = false
         let dayChangesAtStart = dayChanges
         let networkReturnsAtStart = networkReturns
+        let loginChangesAtStart = loginChanges
         do {
             // Runs apart from whoever asked: closing the popover cancels its `.task`, and changing the
             // interval cancels the schedule, but the numbers are still wanted either way.
             let fetched = try await Task { try await fetch() }.value
+            // Counted as a login since replaced, so dropped like that login's failures below.
+            guard loginChanges == loginChangesAtStart else { throw CancellationError() }
             let previous = snapshot
             snapshot = fetched
             errorMessage = nil
@@ -317,24 +354,62 @@ public final class TallyStore {
             stalledSince = nil
             failedRefreshes = 0
             lastFailure = nil
+            loginUnconfirmed = false
+            loginFailure = nil
             // The wait was for a failure that is over, such as a rate limit lifted by a new token. Without this the
             // next automatic refresh could be an hour away.
             if sleepingOnFailure, schedule != nil { startSchedule() }
             cache?.save(fetched)
             announceGoal(from: previous, to: fetched)
-        } catch {
+        } catch where loginChanges == loginChangesAtStart {
             errorMessage = error.localizedDescription
             failedRefreshes += 1
             lastFailure = error
+            // Other failures say nothing about the login, so a rejection found earlier still stands.
+            if let error = error as? GitHubError, WorkflowLoginStatus.savedName(of: error) != nil { loginFailure = error }
             stalled()
+        } catch {
+            // The login it failed with has been replaced, so it says nothing about the one now in use.
         }
         isRefreshing = false
         refreshWaiters.forEach { $0.resume() }
         refreshWaiters = []
+        // The user asked for the new login's numbers, which a pause doesn't hold back any more than Refresh now.
+        if loginChanges != loginChangesAtStart { return await refresh() }
         // A fetch that spanned midnight may have come back with the month that just ended, and one that failed
         // may have failed only because the network was still coming back.
         let failedBeforeNetworkReturned = errorMessage != nil && isOnline && networkReturns != networkReturnsAtStart
         if !automaticRefreshPaused, dayChanges != dayChangesAtStart || failedBeforeNetworkReturned { await refresh() }
+    }
+
+    /// Fetches with a token just saved or cleared. A refresh already under way keeps the credentials it started
+    /// with to the end, so what it brings back belongs to the login being replaced: its numbers would show, be
+    /// saved and announce goals as the new login's, and its failure, such as the old token's rejection, would be
+    /// reported against the new one. It is thrown away and the fetch made again.
+    public func loginChanged() async {
+        loginChanges += 1
+        loginUnconfirmed = true
+        loginFailure = nil
+        savedTokenSkipsPrivateRepos = false
+        savedTokenUnauthorizedSSOOrganizations = 0
+        await refresh()
+    }
+
+    /// Asks GitHub what the token saved in Settings can read. A refresh can't tell: a token without the `repo`
+    /// scope, or not authorized for an SSO organization, searches fine, and its count is just short. An answer that arrives after the token was replaced is
+    /// about the old one and is dropped.
+    ///
+    /// Nothing is asked while the token is rate limited, as with refreshes: a request then can extend the limit. The
+    /// refresh a just-saved token starts is waited out first, since it decides whether the old token's limit applies.
+    func checkSavedToken(_ token: String) async {
+        let loginChangesAtStart = loginChanges
+        await refreshSettled()
+        // The client's own record of the limit isn't reachable from here; this is the same limit, as the refresh met it.
+        if case .rateLimited(let until)? = lastFailure as? GitHubError, until > clock() { return }
+        let reach = await tokenReach(token)
+        guard loginChanges == loginChangesAtStart, let reach else { return }
+        if let readsPrivateRepos = reach.readsPrivateRepos { savedTokenSkipsPrivateRepos = !readsPrivateRepos }
+        savedTokenUnauthorizedSSOOrganizations = reach.unauthorizedSSOOrganizations
     }
 
     /// Tells the user once when a goal is reached, rather than on every refresh that finds it reached. Both

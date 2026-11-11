@@ -14,12 +14,12 @@ private let monthStart = utc.date(from: DateComponents(year: 2026, month: 11, da
 private func pr(
     _ id: Int, createdAt: Date, mergedAt: Date? = nil, repo: String = "me/app",
     state: PullRequest.State? = nil, isDraft: Bool = false, review: PullRequest.ReviewDecision? = nil,
-    checks: PullRequest.ChecksState? = nil
+    checks: PullRequest.ChecksState? = nil, additions: Int? = nil, deletions: Int? = nil
 ) -> PullRequest {
     PullRequest(
         id: "PR_\(id)", title: "PR \(id)", url: URL(string: "https://github.com/\(repo)/pull/\(id)")!,
         createdAt: createdAt, mergedAt: mergedAt, repository: .init(nameWithOwner: repo), state: state, isDraft: isDraft,
-        reviewDecision: review, checks: checks
+        reviewDecision: review, checks: checks, additions: additions, deletions: deletions
     )
 }
 
@@ -114,6 +114,9 @@ private final class FakeGitHub: Sendable {
                     "reviewDecision": pr.reviewDecision?.rawValue as Any? ?? NSNull(),
                     // GitHub answers null for a PR with no checks, else an object.
                     "statusCheckRollup": pr.checks.map { ["state": $0.rawValue] } as Any? ?? NSNull(),
+                    // GitHub always answers a size; null here keeps fixtures without one equal to what decodes.
+                    "additions": pr.additions as Any? ?? NSNull(),
+                    "deletions": pr.deletions as Any? ?? NSNull(),
                 ]
                 // Like GraphQL, answer only what was asked for.
                 return fields
@@ -353,6 +356,43 @@ private func client(_ fake: FakeGitHub, overlap: Overlap) -> GitHubClient {
         let search = queries.value.filter { $0.contains("search(") }
         #expect(!search.isEmpty)
         #expect(search.allSatisfy { $0.contains("statusCheckRollup { state }") })
+    }
+
+    @Test func carriesEachPullRequestsSize() async throws {
+        let prs = [
+            pr(1, createdAt: monthStart, additions: 120, deletions: 30),
+            pr(2, createdAt: monthStart.addingTimeInterval(60), additions: 4, deletions: 0),
+        ]
+        let snapshot = try await client(FakeGitHub(prs: prs)).fetchSnapshot(at: now, calendar: utc)
+        #expect(snapshot.opened.map(\.additions) == [120, 4])
+        #expect(snapshot.opened.map(\.deletions) == [30, 0])
+        #expect(snapshot.opened.map(\.linesChanged) == [150, 4])
+    }
+
+    @Test func aPullRequestWithoutASizeReadsAsUnknownRatherThanEmpty() throws {
+        let json = Data(#"""
+        {"id":"PR_1","title":"Old","url":"https://github.com/me/app/pull/1","createdAt":"2026-11-01T00:00:00Z",
+         "mergedAt":null,"repository":{"nameWithOwner":"me/app"},"additions":3}
+        """#.utf8)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode(PullRequest.self, from: json)
+        #expect(decoded.additions == 3)
+        #expect(decoded.deletions == nil)
+        #expect(decoded.linesChanged == nil)
+    }
+
+    @Test func asksGitHubForSize() async throws {
+        let queries = Box<[String]>([])
+        let fake = FakeGitHub(prs: [pr(1, createdAt: monthStart)])
+        _ = try await GitHubClient { body in
+            let request = try JSONSerialization.jsonObject(with: body) as! [String: Any]
+            queries.value.append(request["query"] as! String)
+            return try fake.respond(to: body)
+        }.fetchSnapshot(at: now, calendar: utc)
+        let search = queries.value.filter { $0.contains("search(") }
+        #expect(!search.isEmpty)
+        #expect(search.allSatisfy { $0.contains("additions") && $0.contains("deletions") })
     }
 
     @Test func asksGitHubForStateAndDraft() async throws {

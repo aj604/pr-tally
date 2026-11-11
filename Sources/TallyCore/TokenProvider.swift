@@ -8,6 +8,71 @@ public enum TokenSource: Sendable, Equatable {
     case githubCLI
 }
 
+/// What a classic token's searches leave out without an error: private repos, unless it has the `repo` scope
+/// (`public_repo` and `repo:status` don't cover them), and organizations that use SAML single sign-on until it's
+/// authorized for each. The count just comes up short either way, so the refresh can't tell.
+public struct TokenReach: Equatable, Sendable {
+    /// Nil when GitHub doesn't say, as for a fine-grained token, which has no scopes.
+    public var readsPrivateRepos: Bool?
+    /// How many SSO organizations GitHub left out of a search for the token's own PRs.
+    public var unauthorizedSSOOrganizations: Int
+
+    public init(readsPrivateRepos: Bool?, unauthorizedSSOOrganizations: Int = 0) {
+        self.readsPrivateRepos = readsPrivateRepos
+        self.unauthorizedSSOOrganizations = unauthorizedSSOOrganizations
+    }
+}
+
+/// Asks GitHub what a token's searches can see, going by the headers on a search like the one a refresh makes:
+/// `X-OAuth-Scopes`, sent on every answer to a classic token, and `X-GitHub-SSO`, sent when results from SSO
+/// organizations the token isn't authorized for were left out.
+public enum TokenScopes {
+    public typealias Load = @Sendable (URLRequest) async throws -> (Data, URLResponse)
+
+    /// Nil when there's no answer to go by: a rejected token, a rate-limited search, or no network.
+    public static func reach(
+        _ token: String, load: Load = { try await URLSession.shared.data(for: $0) }
+    ) async -> TokenReach? {
+        var url = URLComponents(string: "https://api.github.com/search/issues")!
+        url.queryItems = [URLQueryItem(name: "q", value: "is:pr author:@me"), URLQueryItem(name: "per_page", value: "1")]
+        var request = URLRequest(url: url.url!)
+        request.setValue("bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("PRTally", forHTTPHeaderField: "User-Agent")
+        guard let (_, response) = try? await load(request), let response = response as? HTTPURLResponse,
+            response.statusCode == 200
+        else { return nil }
+        // GitHub documents no scopes header for fine-grained tokens. If one ever arrives empty, it isn't a classic
+        // token missing `repo`, and saying so would send someone to swap a token that works.
+        let scopes = isFineGrained(token) ? nil : response.value(forHTTPHeaderField: "X-OAuth-Scopes")
+        return TokenReach(
+            readsPrivateRepos: readsPrivateRepos(scopes: scopes),
+            unauthorizedSSOOrganizations: unauthorizedSSOOrganizations(sso: response.value(forHTTPHeaderField: "X-GitHub-SSO")))
+    }
+
+    static func readsPrivateRepos(scopes header: String?) -> Bool? {
+        // A classic token with no scopes gets the header, empty.
+        guard let header else { return nil }
+        return header.split(separator: ",").contains { $0.trimmingCharacters(in: .whitespaces) == "repo" }
+    }
+
+    /// Reads `partial-results; organizations=21955855,20582480`. Anything else, such as `required; url=…` on a
+    /// request refused outright, isn't a search with results left out.
+    static func unauthorizedSSOOrganizations(sso header: String?) -> Int {
+        guard let header else { return 0 }
+        let parts = header.split(separator: ";").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard parts.first?.lowercased() == "partial-results" else { return 0 }
+        let ids = parts.dropFirst().first { $0.lowercased().hasPrefix("organizations=") }?.dropFirst("organizations=".count)
+        let count = ids?.split(separator: ",").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.count ?? 0
+        // Results were left out even if the list didn't say whose.
+        return max(count, 1)
+    }
+
+    /// GitHub's default new token is fine-grained, which belongs to one user or org and has permissions, not scopes.
+    public static func isFineGrained(_ token: String) -> Bool {
+        token.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("github_pat_")
+    }
+}
+
 /// Finds a GitHub token: a saved override first, then the `gh` CLI's login.
 public actor TokenProvider {
     /// How long a token read from the CLI is reused. Long enough that a refresh normally reads once,

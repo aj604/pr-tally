@@ -79,12 +79,30 @@ import TallyCore
         #expect(matches.map(\.url) == ["4", "1", "3"].map { URL(string: "https://github.com/me/app/pull/\($0)")! })
     }
 
+    @Test func thePromptCarriesTheListsCountAndMetric() {
+        #expect(PullRequestWorkspaceSearch.prompt(count: 5, metric: .opened) == "Search 5 PRs opened")
+        #expect(PullRequestWorkspaceSearch.prompt(count: 1, metric: .merged) == "Search 1 PR merged")
+        #expect(PullRequestWorkspaceSearch.prompt(count: 0, metric: .merged) == "Search 0 PRs merged")
+        #expect(PullRequestWorkspaceSearch.prompt(count: 1_234, metric: .opened) == "Search 1,234 PRs opened")
+    }
+
+    @Test func matchesAreCountedOnlyWhileSearching() {
+        let blank = PullRequestWorkspaceSearch("  ")
+        #expect(blank.matchText(5, of: 5) == nil)
+        #expect(blank.matchAccessibilityLabel(5, of: 5, metric: .opened) == nil)
+        let search = PullRequestWorkspaceSearch("cafe")
+        #expect(search.matchText(2, of: 5) == "2 of 5")
+        #expect(search.matchText(0, of: 1) == "0 of 1")
+        #expect(search.matchAccessibilityLabel(2, of: 5, metric: .opened) == "2 of 5 PRs opened match")
+        #expect(search.matchAccessibilityLabel(1, of: 1, metric: .merged) == "1 of 1 PR merged match")
+    }
+
     @Test func listOffersSearchWithoutLeavingTheCount() {
         let host = NSHostingView(rootView: PullRequestList(snapshot: snapshot(), metric: .opened, now: now))
         host.frame = NSRect(x: 0, y: 0, width: 288, height: 420)
         host.layoutSubtreeIfNeeded()
         let fields = descendants(of: host).compactMap { $0 as? NSTextField }
-        #expect(fields.contains { $0.placeholderString == "Search title, repo, # or URL" })
+        #expect(fields.contains { $0.placeholderString == "Search 3 PRs opened" })
     }
 
     @Test func typingIntoTheHostedFieldUpdatesTheList() async throws {
@@ -99,13 +117,15 @@ import TallyCore
         host.layoutSubtreeIfNeeded()
         let originalHeight = host.fittingSize.height
         let field = try #require(descendants(of: host).compactMap { $0 as? NSTextField }.first {
-            $0.placeholderString == "Search title, repo, # or URL"
+            $0.placeholderString?.hasPrefix("Search ") == true
         })
         field.stringValue = "infra"
         field.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: field))
         for _ in 0..<5 { await Task.yield() }
         host.layoutSubtreeIfNeeded()
         #expect(host.fittingSize.height < originalHeight)
+        // The placeholder counts the list being searched, not the matches, so clearing the field shows the same count.
+        #expect(field.placeholderString == "Search 3 PRs opened")
         field.stringValue = ""
         field.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: field))
         for _ in 0..<5 { await Task.yield() }

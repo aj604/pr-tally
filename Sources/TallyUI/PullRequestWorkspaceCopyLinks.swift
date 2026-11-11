@@ -7,18 +7,22 @@ struct PullRequestWorkspaceCopyLinksButton: NSViewRepresentable {
     let pullRequests: [PullRequest]
     let pasteboard: NSPasteboard
 
+    /// An icon like each row's copy button, so it fits at the end of the search row; the tooltip and accessibility
+    /// label say how many links it copies.
     func makeNSView(context: Context) -> NSButton {
-        let button = NSButton(title: "Copy links", target: context.coordinator, action: #selector(Coordinator.copyLinks(_:)))
-        button.bezelStyle = .rounded
-        button.controlSize = .small
-        button.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        let button = NSButton()
+        button.isBordered = false
+        button.imagePosition = .imageOnly
+        button.contentTintColor = .secondaryLabelColor
+        button.target = context.coordinator
+        button.action = #selector(Coordinator.copyLinks(_:))
         return button
     }
 
     func updateNSView(_ button: NSButton, context: Context) {
         context.coordinator.urls = pullRequests.map(\.url)
         context.coordinator.pasteboard = pasteboard
-        button.title = "Copy links"
+        button.image = NSImage(systemSymbolName: "list.clipboard", accessibilityDescription: nil)
         button.isEnabled = !pullRequests.isEmpty
         let count = pullRequests.count.formatted()
         let noun = pullRequests.count == 1 ? "PR" : "PRs"
@@ -42,7 +46,7 @@ struct PullRequestWorkspaceCopyLinksButton: NSViewRepresentable {
             guard !urls.isEmpty else { return }
             pasteboard.clearContents()
             if pasteboard.setString(urls.map(\.absoluteString).joined(separator: "\n"), forType: .string) {
-                sender.title = urls.count == 1 ? "Link copied" : "Links copied"
+                sender.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: nil)
                 sender.toolTip = "\(urls.count.formatted()) \(urls.count == 1 ? "link" : "links") copied"
             }
         }

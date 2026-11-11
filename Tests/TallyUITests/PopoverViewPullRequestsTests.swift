@@ -132,11 +132,9 @@ private func snapshot(_ prs: [PullRequest], now: Date) -> MonthSnapshot {
             style.timeZone = TimeZone(identifier: zone)!
             return date.formatted(style)
         }
-        let month = Date.FormatStyle.dateTime.month(.abbreviated).day().hour().minute()
         let time = Date.FormatStyle(date: .omitted, time: .shortened)
-        #expect(window.rowTime(date, withDay: true) == formatted(month, in: "Pacific/Kiritimati"))
-        #expect(window.rowTime(date, withDay: false) == formatted(time, in: "Pacific/Kiritimati"))
-        #expect(window.rowTime(date, withDay: true) != formatted(month, in: "UTC"))
+        #expect(window.rowTime(date) == formatted(time, in: "Pacific/Kiritimati"))
+        #expect(window.rowTime(date) != formatted(time, in: "UTC"))
     }
 
     @Test func theFunnelListsOnlyWhatWasOpenedThisMonthAndHasntMerged() {

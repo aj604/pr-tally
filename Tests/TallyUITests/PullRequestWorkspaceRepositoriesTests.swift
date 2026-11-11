@@ -63,7 +63,7 @@ import TallyCore
         let host = NSHostingView(rootView: PullRequestList(snapshot: empty, metric: .opened, now: now))
         host.frame = NSRect(x: 0, y: 0, width: 288, height: 420)
         host.layoutSubtreeIfNeeded()
-        let pickers = descendants(of: host).compactMap { $0 as? NSPopUpButton }
+        let pickers = descendants(of: host).compactMap { $0 as? NSPopUpButton }.filter { $0.accessibilityLabel() == "Repository" }
         print("Repository picker titles: \(pickers.map(\.itemTitles))")
         #expect(pickers.count == 1)
         #expect(pickers.first?.itemTitles == ["All repositories (0)"])
@@ -82,7 +82,7 @@ import TallyCore
         for (focus, titles) in cases {
             let (host, window) = await hosted(focus: focus)
             defer { window.orderOut(nil) }
-            let picker = try #require(descendants(of: host).compactMap { $0 as? NSPopUpButton }.first)
+            let picker = try #require(descendants(of: host).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Repository" })
             #expect(picker.itemTitles == titles)
         }
     }
@@ -90,9 +90,9 @@ import TallyCore
     @Test func choosingSwitchingAndClearingRepositoriesKeepsTheSearch() async throws {
         let (host, window) = await hosted()
         defer { window.orderOut(nil) }
-        let picker = try #require(descendants(of: host).compactMap { $0 as? NSPopUpButton }.first)
+        let picker = try #require(descendants(of: host).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Repository" })
         let field = try #require(descendants(of: host).compactMap { $0 as? NSTextField }.first {
-            $0.placeholderString == "Search title, repo, # or URL"
+            $0.placeholderString?.hasPrefix("Search ") == true
         })
         let originalHeight = host.fittingSize.height
         field.stringValue = "Shared"
@@ -113,7 +113,7 @@ import TallyCore
         select("acme/infra (2)", in: picker)
         await settle(host)
         #expect(picker.titleOfSelectedItem == "acme/infra (2)")
-        // One matching app PR, but two matching infra PRs; the repository chip occupies the same space in both.
+        // One matching app PR, but two matching infra PRs.
         #expect(host.fittingSize.height > appHeight)
         #expect(picker.itemTitles == titles)
         #expect(field.stringValue == "Shared")
@@ -131,7 +131,7 @@ import TallyCore
     @Test func changingScopeKeepsAnEmptyRepositorySelectedAndLetsItBeCleared() async throws {
         let (host, window) = await hosted(focus: .init(repository: "me/legacy"))
         defer { window.orderOut(nil) }
-        let picker = try #require(descendants(of: host).compactMap { $0 as? NSPopUpButton }.first)
+        let picker = try #require(descendants(of: host).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Repository" })
         let scope = try #require(descendants(of: host).compactMap { $0 as? NSSegmentedControl }.first)
         #expect(picker.titleOfSelectedItem == "me/legacy (1)")
         scope.selectedSegment = 0
@@ -143,6 +143,33 @@ import TallyCore
         await settle(host)
         #expect(picker.titleOfSelectedItem == "All repositories (4)")
         #expect(picker.itemTitles == ["All repositories (4)", "acme/infra (2)", "me/app (2)"])
+    }
+
+    @Test func aPickedRepositoryTakesNoRowBeyondThePicker() async throws {
+        let (host, window) = await hosted(focus: .init(repository: "me/app"))
+        defer { window.orderOut(nil) }
+        let picker = try #require(descendants(of: host).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Repository" })
+        #expect(picker.titleOfSelectedItem == "me/app (2)")
+
+        // The same two rows with nothing filtered: the picker reads "All repositories" and the list is no shorter.
+        let only = snapshot().opened.filter { $0.repository.nameWithOwner == "me/app" }
+        let unfiltered = NSHostingView(rootView: PullRequestList(
+            snapshot: MonthSnapshot(login: "fixture", window: month, opened: only, merged: [], totalContributions: 0, fetchedAt: now),
+            metric: .opened, now: now
+        ))
+        let other = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 288, height: 420), styleMask: [.titled], backing: .buffered, defer: false
+        )
+        other.contentView = unfiltered
+        other.orderFront(nil)
+        defer { other.orderOut(nil) }
+        await settle(unfiltered)
+        // A picked repository opens on the whole month, so the other list shows it too.
+        let scope = try #require(descendants(of: unfiltered).compactMap { $0 as? NSSegmentedControl }.first)
+        scope.selectedSegment = 1
+        scope.sendAction(scope.action, to: scope.target)
+        await settle(unfiltered)
+        #expect(host.fittingSize.height == unfiltered.fittingSize.height)
     }
 
     @Test func longRepositoryNamesFitThePopoverAndRemainWholeInTheMenu() async throws {
@@ -159,7 +186,7 @@ import TallyCore
         window.orderFront(nil)
         defer { window.orderOut(nil) }
         await settle(host)
-        let picker = try #require(descendants(of: host).compactMap { $0 as? NSPopUpButton }.first)
+        let picker = try #require(descendants(of: host).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Repository" })
         #expect(picker.itemTitles == ["All repositories (1)", "\(name) (1)"])
         #expect(picker.frame.width > 0 && picker.frame.width <= 288)
         #expect(picker.cell?.lineBreakMode == .byTruncatingMiddle)

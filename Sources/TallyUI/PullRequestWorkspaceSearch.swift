@@ -11,6 +11,27 @@ struct PullRequestWorkspaceSearch {
 
     var isActive: Bool { !query.isEmpty }
 
+    /// The field's placeholder says what the list holds ("Search 5 PRs opened"), so the count needs no row of its own
+    /// and the metric stays named while nothing is typed.
+    static func prompt(count: Int, metric: PRMetric) -> String {
+        "Search \(count.formatted()) \(noun(count, metric))"
+    }
+
+    /// While searching, how many of the list match ("2 of 5"), short enough to sit inside the search row. Nothing
+    /// while the field is blank, as the placeholder already gives the count.
+    func matchText(_ matches: Int, of total: Int) -> String? {
+        isActive ? "\(matches.formatted()) of \(total.formatted())" : nil
+    }
+
+    /// `matchText` read out in full, since "2 of 5" alone doesn't say of what.
+    func matchAccessibilityLabel(_ matches: Int, of total: Int, metric: PRMetric) -> String? {
+        isActive ? "\(matches.formatted()) of \(total.formatted()) \(Self.noun(total, metric)) match" : nil
+    }
+
+    private static func noun(_ count: Int, _ metric: PRMetric) -> String {
+        count == 1 ? (metric == .opened ? "PR opened" : "PR merged") : metric.noun
+    }
+
     func results(in pullRequests: [PullRequest]) -> [PullRequest] {
         guard isActive else { return pullRequests }
         if let reference = Reference(query) { return pullRequests.filter { reference.matches($0) } }

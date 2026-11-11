@@ -90,6 +90,57 @@ private final class MenuBarTooltipDefaults: UserDefaults, @unchecked Sendable {
         #expect(firstLaunch.text == "No numbers for this month yet")
     }
 
+    @Test func fadedNumbersSayWhyAboveWhenTheyWereUpdated() {
+        let offline = "No network connection. The numbers will update when it's back."
+        let stale = MenuBarTooltip(
+            pace: Pace(goal: 100, count: 42, window: window, at: november(16)), today: 2, metric: .opened,
+            window: window, goalDay: nil, lastMonth: nil, problem: offline, updated: "Updated 11:58 AM"
+        )
+        #expect(stale.lines[2...] == ["2 today, 2 more for today's share", offline, "Updated 11:58 AM"])
+        let neverSignedIn = MenuBarTooltip(
+            pace: nil, today: 0, metric: .opened, window: nil, goalDay: nil, lastMonth: nil,
+            problem: "No GitHub login found.", updated: nil
+        )
+        #expect(neverSignedIn.text == "No numbers for this month yet\nNo GitHub login found.")
+    }
+
+    @Test func theStoreGivesTheReasonOnlyOnceTheMenuBarHasFaded() async {
+        // Long enough after the numbers were fetched that the next refresh was due.
+        let now = november(16).addingTimeInterval(30 * 60)
+        let script = MenuBarTooltipScript(snapshot(count: 40, today: 2))
+        let store = TallyStore(defaults: MenuBarTooltipDefaults()) { try await script.next() }
+        await store.refresh()
+        store.clock = { now }
+        await store.refresh()
+        // The popover already says what went wrong; the menu bar leaves a failure this brief alone.
+        #expect(store.errorMessage != nil)
+        #expect(!store.menuBarIsStale)
+        #expect(!store.menuBarTooltip(at: now).contains(store.errorMessage!))
+        store.clock = { now.addingTimeInterval(120) }
+        await store.refresh()
+        #expect(store.menuBarIsStale)
+        let lines = store.menuBarTooltip(at: now).components(separatedBy: "\n")
+        #expect(lines.dropLast().last == GitHubError.http(502).localizedDescription)
+        #expect(lines.last?.hasPrefix("Updated ") == true)
+
+        await store.refresh()
+        #expect(!store.menuBarIsStale)
+        #expect(!store.menuBarTooltip(at: now).contains("502"))
+    }
+
+    @Test func aFirstLaunchThatCantSignInSaysSoRatherThanWaiting() async {
+        let now = Date()
+        let store = TallyStore(defaults: MenuBarTooltipDefaults()) { throw GitHubError.noToken }
+        store.clock = { now }
+        await store.refresh()
+        #expect(store.menuBarTooltip(at: now) == "No numbers for this month yet")
+        store.clock = { now.addingTimeInterval(120) }
+        await store.refresh()
+        #expect(store.menuBarTooltip(at: now).hasPrefix(
+            "No numbers for this month yet\n\(GitHubError.noToken.localizedDescription)"
+        ))
+    }
+
     @Test func theStoreFollowsTheMetricAndGoalWhicheverNumberTheMenuBarShows() async {
         let now = november(16)
         let snapshot = snapshot(count: 98, today: 3)
@@ -110,5 +161,17 @@ private final class MenuBarTooltipDefaults: UserDefaults, @unchecked Sendable {
         #expect(store.menuBarTooltip(at: now).hasPrefix("101 of 50 PRs merged in November\nGoal hit Nov 16 🎉"))
         // Another month's numbers aren't this month's.
         #expect(store.menuBarTooltip(at: november(16).addingTimeInterval(20 * 86_400)).hasPrefix("Last count for November: "))
+    }
+}
+
+/// Succeeds once, then fails the way a GitHub outage would until told to recover.
+private actor MenuBarTooltipScript {
+    private let snapshot: MonthSnapshot
+    private var calls = 0
+    init(_ snapshot: MonthSnapshot) { self.snapshot = snapshot }
+    func next() throws -> MonthSnapshot {
+        calls += 1
+        guard calls == 1 || calls > 3 else { throw GitHubError.http(502) }
+        return snapshot
     }
 }

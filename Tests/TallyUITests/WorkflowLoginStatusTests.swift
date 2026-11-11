@@ -226,7 +226,7 @@ private actor Counter {
 
     private func store(_ replies: Replies, readsPrivateRepos: Bool?) -> TallyStore {
         let store = store(replies)
-        store.tokenScopes = { _ in readsPrivateRepos }
+        store.tokenReach = { _ in readsPrivateRepos.map { TokenReach(readsPrivateRepos: $0) } }
         return store
     }
 
@@ -276,7 +276,7 @@ private actor Counter {
     @Test func noAnswerKeepsTheLastFinding() async {
         let store = store(Replies([.success(snapshot(login: "alice"))]), readsPrivateRepos: false)
         await store.checkSavedToken("ghp_public")
-        store.tokenScopes = { _ in nil }
+        store.tokenReach = { _ in nil }
         await store.checkSavedToken("ghp_public")
         #expect(store.savedTokenSkipsPrivateRepos)
     }
@@ -289,9 +289,9 @@ private actor Counter {
         await store.refresh()
         await store.refresh()
         let asked = Counter()
-        store.tokenScopes = { _ in
+        store.tokenReach = { _ in
             await asked.increment()
-            return true
+            return TokenReach(readsPrivateRepos: true)
         }
         await store.checkSavedToken("ghp_public")
         #expect(await asked.value == 0)
@@ -319,10 +319,10 @@ private actor Counter {
         let store = store(Replies([.success(snapshot(login: "bob"))]))
         let gate = AsyncStream<Void>.makeStream()
         let asked = AsyncStream<Void>.makeStream()
-        store.tokenScopes = { _ in
+        store.tokenReach = { _ in
             asked.continuation.yield()
             for await _ in gate.stream { break }
-            return false
+            return TokenReach(readsPrivateRepos: false, unauthorizedSSOOrganizations: 2)
         }
         let checking = Task { await store.checkSavedToken("ghp_old") }
         for await _ in asked.stream { break }
@@ -330,5 +330,82 @@ private actor Counter {
         gate.continuation.yield()
         await checking.value
         #expect(!store.savedTokenSkipsPrivateRepos)
+        #expect(store.savedTokenUnauthorizedSSOOrganizations == 0)
+    }
+
+    private func store(_ replies: Replies, reach: TokenReach?) -> TallyStore {
+        let store = store(replies)
+        store.tokenReach = { _ in reach }
+        return store
+    }
+
+    /// A token with `repo` that isn't authorized for an SSO org searches fine too, and GitHub leaves that org out.
+    @Test func aSavedTokenNotAuthorizedForSSOOrgsIsAWarning() async {
+        let store = store(Replies([.success(snapshot(login: "alice"))]),
+            reach: TokenReach(readsPrivateRepos: true, unauthorizedSSOOrganizations: 2))
+        await store.refresh()
+        await store.checkSavedToken("ghp_sso")
+        let status = store.workflowLoginStatus(usesSavedToken: true)
+        #expect(status.state == .counting(login: "alice"))
+        #expect(status.isWarning)
+        #expect(status.text == "Counting PRs for @alice, but not in 2 organizations that use SSO: the token saved in "
+            + "your keychain isn't authorized for them, so GitHub's search leaves their PRs out. \(WorkflowLoginStatus.ssoFix)")
+        // The gh login is a different token, which this said nothing about.
+        #expect(!store.workflowLoginStatus(usesSavedToken: false).isWarning)
+    }
+
+    @Test func oneSSOOrgAndNoNumbersYet() {
+        let status = WorkflowLoginStatus(usesSavedToken: true, state: .unconfirmed, unauthorizedSSOOrganizations: 1)
+        #expect(status.isWarning)
+        #expect(status.text.hasPrefix("GitHub's search leaves out PRs in 1 organization that uses SSO: the token saved "
+            + "in your keychain isn't authorized for it."))
+    }
+
+    @Test func aMissingScopeAndSSOOrgsAreBothSaid() {
+        let status = WorkflowLoginStatus(
+            usesSavedToken: true, state: .counting(login: "alice"), skipsPrivateRepos: true, unauthorizedSSOOrganizations: 3)
+        #expect(status.text.hasPrefix("Counting only PRs in public repos for @alice: "))
+        #expect(status.text.hasSuffix("It also isn't authorized for 3 organizations that use SSO, whose PRs are left out too."))
+    }
+
+    /// A rejection is what to fix first, and while a new token is checked the finding is the old one's.
+    @Test func aRejectionOrACheckingTokenHidesTheSSOWarning() {
+        for state in [WorkflowLoginStatus.State.unusable(.unauthorized(.saved)), .checking] {
+            let status = WorkflowLoginStatus(usesSavedToken: true, state: state, unauthorizedSSOOrganizations: 2)
+            #expect(!status.text.contains("SSO:"))
+            #expect(status.isWarning == (state != .checking))
+        }
+    }
+
+    /// Authorizing the org on GitHub clears it on the next check; offline, the last finding stands.
+    @Test func theSSOFindingFollowsTheLatestAnswer() async {
+        let store = store(Replies([.success(snapshot(login: "alice"))]),
+            reach: TokenReach(readsPrivateRepos: true, unauthorizedSSOOrganizations: 1))
+        await store.checkSavedToken("ghp_sso")
+        store.tokenReach = { _ in nil }
+        await store.checkSavedToken("ghp_sso")
+        #expect(store.savedTokenUnauthorizedSSOOrganizations == 1)
+        store.tokenReach = { _ in TokenReach(readsPrivateRepos: true) }
+        await store.checkSavedToken("ghp_sso")
+        #expect(store.savedTokenUnauthorizedSSOOrganizations == 0)
+        #expect(!store.workflowLoginStatus(usesSavedToken: true).isWarning)
+    }
+
+    /// A fine-grained token has no scopes to report, which mustn't clear or set the scope finding.
+    @Test func noScopeAnswerKeepsTheScopeFindingButTakesTheSSOOne() async {
+        let store = store(Replies([.success(snapshot(login: "alice"))]), readsPrivateRepos: false)
+        await store.checkSavedToken("ghp_public")
+        store.tokenReach = { _ in TokenReach(readsPrivateRepos: nil, unauthorizedSSOOrganizations: 1) }
+        await store.checkSavedToken("ghp_public")
+        #expect(store.savedTokenSkipsPrivateRepos)
+        #expect(store.savedTokenUnauthorizedSSOOrganizations == 1)
+    }
+
+    @Test func savingANewTokenClearsTheSSOFinding() async {
+        let store = store(Replies([.success(snapshot(login: "alice"))]),
+            reach: TokenReach(readsPrivateRepos: true, unauthorizedSSOOrganizations: 2))
+        await store.checkSavedToken("ghp_sso")
+        await store.loginChanged()
+        #expect(store.savedTokenUnauthorizedSSOOrganizations == 0)
     }
 }

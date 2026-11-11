@@ -145,8 +145,11 @@ public final class TallyStore {
     /// error. Until a token is saved or cleared, an answer that says nothing, such as while offline, keeps the last.
     /// See `checkSavedToken(_:)`.
     private(set) var savedTokenSkipsPrivateRepos = false
-    /// Asks GitHub whether a token can read private repos, replaced in tests.
-    @ObservationIgnored var tokenScopes: @Sendable (String) async -> Bool? = { await TokenScopes.readsPrivateRepos($0) }
+    /// How many SAML SSO organizations GitHub says the saved token isn't authorized for, so its counts leave out
+    /// their PRs with no error. Kept and cleared like `savedTokenSkipsPrivateRepos`.
+    private(set) var savedTokenUnauthorizedSSOOrganizations = 0
+    /// Asks GitHub what a token's searches leave out, replaced in tests.
+    @ObservationIgnored var tokenReach: @Sendable (String) async -> TokenReach? = { await TokenScopes.reach($0) }
 
     public init(
         defaults: UserDefaults = .standard, cache: SnapshotCache? = nil,
@@ -388,11 +391,12 @@ public final class TallyStore {
         loginUnconfirmed = true
         loginFailure = nil
         savedTokenSkipsPrivateRepos = false
+        savedTokenUnauthorizedSSOOrganizations = 0
         await refresh()
     }
 
     /// Asks GitHub what the token saved in Settings can read. A refresh can't tell: a token without the `repo`
-    /// scope searches fine, and its count is just short. An answer that arrives after the token was replaced is
+    /// scope, or not authorized for an SSO organization, searches fine, and its count is just short. An answer that arrives after the token was replaced is
     /// about the old one and is dropped.
     ///
     /// Nothing is asked while the token is rate limited, as with refreshes: a request then can extend the limit. The
@@ -402,9 +406,10 @@ public final class TallyStore {
         await refreshSettled()
         // The client's own record of the limit isn't reachable from here; this is the same limit, as the refresh met it.
         if case .rateLimited(let until)? = lastFailure as? GitHubError, until > clock() { return }
-        let readsPrivateRepos = await tokenScopes(token)
-        guard loginChanges == loginChangesAtStart, let readsPrivateRepos else { return }
-        savedTokenSkipsPrivateRepos = !readsPrivateRepos
+        let reach = await tokenReach(token)
+        guard loginChanges == loginChangesAtStart, let reach else { return }
+        if let readsPrivateRepos = reach.readsPrivateRepos { savedTokenSkipsPrivateRepos = !readsPrivateRepos }
+        savedTokenUnauthorizedSSOOrganizations = reach.unauthorizedSSOOrganizations
     }
 
     /// Tells the user once when a goal is reached, rather than on every refresh that finds it reached. Both

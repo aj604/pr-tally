@@ -25,7 +25,7 @@ struct SettingsView: View {
     /// GitHub's default new token is fine-grained, which belongs to one user or org. Whether search then leaves
     /// out private repos under other owners is undocumented, so the warning says "can".
     static func isFineGrained(_ token: String) -> Bool {
-        token.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("github_pat_")
+        TokenScopes.isFineGrained(token)
     }
 
     static let fineGrainedWarning =
@@ -106,7 +106,7 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        // On every opening too, since a classic token's scopes can be changed on GitHub without changing the token.
+        // On every opening too, since a classic token's scopes and SSO authorizations change on GitHub, not here.
         .task(id: tokenChanges) {
             guard hasSavedToken, let token = KeychainToken.standard.read() else { return }
             await store.checkSavedToken(token)

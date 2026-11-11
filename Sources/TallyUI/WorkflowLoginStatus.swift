@@ -23,6 +23,9 @@ struct WorkflowLoginStatus: Equatable {
     /// GitHub says the saved token lacks the `repo` scope. Its refreshes succeed, so without this Settings would name
     /// the account as counted while every PR in a private repo is left out.
     var skipsPrivateRepos = false
+    /// GitHub left this many SAML SSO organizations out of a search with the saved token, which isn't authorized for
+    /// them. Its refreshes succeed too, and the count is short by their PRs.
+    var unauthorizedSSOOrganizations = 0
 
     static let tokenAdvice =
         "To use a different account, save a classic token with the `repo` scope, authorized for any SSO orgs."
@@ -31,7 +34,11 @@ struct WorkflowLoginStatus: Equatable {
     var text: String {
         let source = usesSavedToken ? "the token saved in your keychain" : "your gh login"
         let advice = usesSavedToken ? "" : " \(Self.tokenAdvice)"
-        if let scopeWarning { return scopeWarning }
+        if let scopeWarning {
+            guard let orgs = ssoOrganizations else { return scopeWarning }
+            return "\(scopeWarning) It also isn't authorized for \(orgs.named), whose PRs are left out too."
+        }
+        if let ssoWarning { return ssoWarning }
         switch state {
         case .checking:
             return usesSavedToken ? "Checking the new token with GitHub…" : "Checking your gh login with GitHub…"
@@ -56,7 +63,32 @@ struct WorkflowLoginStatus: Equatable {
 
     var isWarning: Bool {
         if case .unusable = state { return true }
-        return scopeWarning != nil
+        return scopeWarning != nil || ssoWarning != nil
+    }
+
+    static let ssoFix = "To count them, find this token on GitHub under Settings > Developer settings > "
+        + "Personal access tokens, choose Configure SSO, and authorize each organization."
+
+    /// The SSO organizations left out, worded for a sentence. Held back when `scopeWarning` would be, for its reasons.
+    private var ssoOrganizations: (named: String, them: String, their: String)? {
+        guard usesSavedToken, unauthorizedSSOOrganizations > 0 else { return nil }
+        switch state {
+        case .checking, .unusable: return nil
+        case .counting, .unconfirmed, .unknown: break
+        }
+        return unauthorizedSSOOrganizations == 1
+            ? ("1 organization that uses SSO", "it", "its")
+            : ("\(unauthorizedSSOOrganizations) organizations that use SSO", "them", "their")
+    }
+
+    private var ssoWarning: String? {
+        guard let orgs = ssoOrganizations else { return nil }
+        if case .counting(let login) = state {
+            return "Counting PRs for @\(login), but not in \(orgs.named): the token saved in your keychain isn't "
+                + "authorized for \(orgs.them), so GitHub's search leaves \(orgs.their) PRs out. \(Self.ssoFix)"
+        }
+        return "GitHub's search leaves out PRs in \(orgs.named): the token saved in your keychain isn't authorized "
+            + "for \(orgs.them). \(Self.ssoFix)"
     }
 
     /// A rejection says more, and while checking a new token the finding may be about the old one.
@@ -80,7 +112,8 @@ extension TallyStore {
     /// `usesSavedToken` comes from the keychain, which Settings reads itself.
     func workflowLoginStatus(usesSavedToken: Bool) -> WorkflowLoginStatus {
         WorkflowLoginStatus(
-            usesSavedToken: usesSavedToken, state: workflowLoginState, skipsPrivateRepos: savedTokenSkipsPrivateRepos)
+            usesSavedToken: usesSavedToken, state: workflowLoginState, skipsPrivateRepos: savedTokenSkipsPrivateRepos,
+            unauthorizedSSOOrganizations: savedTokenUnauthorizedSSOOrganizations)
     }
 
     private var workflowLoginState: WorkflowLoginStatus.State {

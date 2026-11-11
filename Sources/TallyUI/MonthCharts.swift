@@ -25,6 +25,9 @@ struct MonthCharts: View {
     private var quotaDays: MonthInsightQuotaDays? {
         MonthInsightQuotaDays(snapshot: snapshot, metric: metric, goal: goal, at: now)
     }
+    private var pipeline: MonthInsightMergePipeline? {
+        MonthInsightMergePipeline(snapshot: snapshot, metric: metric, goal: goal, at: now)
+    }
     /// The plot makes room for a projection past the goal, but not so much that a lumpy early month flattens the line.
     private var yMax: Int {
         max(projection?.ceiling(goal: goal) ?? goal, cumulative.last ?? 0, 1)
@@ -45,6 +48,13 @@ struct MonthCharts: View {
                     Text(outlook.line)
                         .font(.caption).foregroundStyle(.secondary).monospacedDigit()
                         .help(outlook.help)
+                }
+                // The range only extends the rate of merges so far, so say whether the PRs to make the rest exist yet.
+                if let pipeline {
+                    let text = MonthInsightMergePipelineText(pipeline: pipeline, goal: goal)
+                    Text(text.line)
+                        .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                        .help(text.help)
                 }
                 runningTotal.frame(height: 96)
             }
@@ -113,6 +123,7 @@ struct MonthCharts: View {
         .accessibilityLabel(
             "Running total of \(cumulative.last ?? 0) against a steady pace to \(goal)"
                 + (projection.map { ". \(MonthInsightOutlookText(projection: $0, goal: goal).spoken)" } ?? "")
+                + (pipeline.map { ". \(MonthInsightMergePipelineText(pipeline: $0, goal: goal).spoken)" } ?? "")
         )
     }
 

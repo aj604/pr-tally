@@ -52,6 +52,11 @@ private actor Replies {
     var isHolding: Bool { held != nil }
 }
 
+private actor Counter {
+    private(set) var value = 0
+    func increment() { value += 1 }
+}
+
 @MainActor @Suite struct WorkflowLoginStatusTests {
     private func store(_ replies: Replies) -> TallyStore {
         TallyStore(defaults: LoginStatusDefaults()) { try await replies.fetch() }
@@ -273,6 +278,39 @@ private actor Replies {
         await store.checkSavedToken("ghp_public")
         store.tokenScopes = { _ in nil }
         await store.checkSavedToken("ghp_public")
+        #expect(store.savedTokenSkipsPrivateRepos)
+    }
+
+    /// A request with a rate-limited token can extend the limit, so the check waits it out like refreshes do.
+    @Test func aRateLimitedTokenIsNotAsked() async {
+        let limited = GitHubError.rateLimited(until: Date().addingTimeInterval(30 * 60))
+        let store = store(Replies([.success(snapshot(login: "alice")), .failure(limited)]), readsPrivateRepos: false)
+        await store.checkSavedToken("ghp_public")
+        await store.refresh()
+        await store.refresh()
+        let asked = Counter()
+        store.tokenScopes = { _ in
+            await asked.increment()
+            return true
+        }
+        await store.checkSavedToken("ghp_public")
+        #expect(await asked.value == 0)
+        #expect(store.savedTokenSkipsPrivateRepos)
+    }
+
+    /// The old token's limit is no reason to skip a new one, which its refresh shows once it's back.
+    @Test func aNewTokensCheckWaitsForItsRefreshRatherThanTheOldLimit() async throws {
+        let limited = GitHubError.rateLimited(until: Date().addingTimeInterval(30 * 60))
+        let replies = Replies([.failure(limited), .success(snapshot(login: "bob"))])
+        let store = store(replies, readsPrivateRepos: false)
+        await store.refresh()
+        await replies.holdTheNextFetch()
+        let saving = Task { await store.loginChanged() }
+        while await !replies.isHolding { try await Task.sleep(for: .milliseconds(5)) }
+        let checking = Task { await store.checkSavedToken("ghp_new") }
+        await replies.release()
+        await saving.value
+        await checking.value
         #expect(store.savedTokenSkipsPrivateRepos)
     }
 

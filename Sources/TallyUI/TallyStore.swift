@@ -394,8 +394,14 @@ public final class TallyStore {
     /// Asks GitHub what the token saved in Settings can read. A refresh can't tell: a token without the `repo`
     /// scope searches fine, and its count is just short. An answer that arrives after the token was replaced is
     /// about the old one and is dropped.
+    ///
+    /// Nothing is asked while the token is rate limited, as with refreshes: a request then can extend the limit. The
+    /// refresh a just-saved token starts is waited out first, since it decides whether the old token's limit applies.
     func checkSavedToken(_ token: String) async {
         let loginChangesAtStart = loginChanges
+        await refreshSettled()
+        // The client's own record of the limit isn't reachable from here; this is the same limit, as the refresh met it.
+        if case .rateLimited(let until)? = lastFailure as? GitHubError, until > clock() { return }
         let readsPrivateRepos = await tokenScopes(token)
         guard loginChanges == loginChangesAtStart, let readsPrivateRepos else { return }
         savedTokenSkipsPrivateRepos = !readsPrivateRepos

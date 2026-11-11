@@ -5,9 +5,26 @@ public struct PopoverView: View {
     @Bindable private var store: TallyStore
     /// What the pull request list opens narrowed to, set by whatever opened it.
     @State private var listFocus = PullRequestFocus()
+    /// Bumped when the heading steps sideways, so the list reopens on the new slice rather than keeping the old one's
+    /// filters.
+    @State private var listOpening = 0
+    /// Whether the zoom heading shows all its lines. Kept across steps and openings, since someone who opened it once
+    /// wants it open on the next slice too.
+    @State private var insightExpanded = false
 
     public init(store: TallyStore) {
         self.store = store
+    }
+
+    /// Opens on the pull request list zoomed to a zero-based day, a repository or the count the goal doesn't follow, with
+    /// its heading folded or open, so fixtures can render a zoom.
+    @_spi(Fixtures) public init(
+        store: TallyStore, focusDay day: Int? = nil, focusRepository repository: String? = nil,
+        focusMetric metric: PRMetric? = nil, insightExpanded: Bool = false
+    ) {
+        self.store = store
+        _listFocus = State(initialValue: PullRequestFocus(day: day, repository: repository, metric: metric))
+        _insightExpanded = State(initialValue: insightExpanded)
     }
 
     public var body: some View {
@@ -15,8 +32,15 @@ public struct PopoverView: View {
             header
             if store.screen == .settings {
                 SettingsView(store: store)
-            } else if store.screen == .pullRequests, let snapshot = store.currentSnapshot() {
+            } else if showingList, let snapshot = store.currentSnapshot() {
+                FocusInsightSummary(
+                    snapshot: snapshot, metric: store.metric, focus: listFocus, now: Date(), expanded: $insightExpanded
+                ) { focus in
+                    listFocus = focus
+                    listOpening += 1
+                }
                 PullRequestList(snapshot: snapshot, metric: store.metric, now: Date(), focus: listFocus)
+                    .id(listOpening)
             } else if let snapshot = store.currentSnapshot(), let pace = store.pace() {
                 progress(pace, today: snapshot.todayCount(for: store.metric, at: Date()), snapshot: snapshot)
                 stats(snapshot: snapshot, pace: pace)
@@ -64,13 +88,18 @@ public struct PopoverView: View {
             footer
         }
         .padding(16)
-        .frame(width: 320)
+        .frame(width: PopoverWidth.points(showingList: showingList))
         .task { await store.refreshIfStale() }
         // `MenuBarExtra` keeps this view alive between openings, with its state, so the reset is explicit.
         .onDisappear {
             store.popoverClosed()
             listFocus = PullRequestFocus()
         }
+    }
+
+    /// The list shows only once there are numbers to list; until then its screen shows what the summary would.
+    private var showingList: Bool {
+        store.screen == .pullRequests && store.currentSnapshot() != nil
     }
 
     private func showPullRequests(_ focus: PullRequestFocus = PullRequestFocus()) {
@@ -80,7 +109,7 @@ public struct PopoverView: View {
 
     private var header: some View {
         HStack(alignment: .firstTextBaseline) {
-            if store.screen == .pullRequests, store.currentSnapshot() != nil {
+            if showingList {
                 Button {
                     store.screen = .summary
                 } label: {
@@ -195,7 +224,7 @@ public struct PopoverView: View {
         if count > 0 {
             Button { showPullRequests(PullRequestFocus(metric: other)) } label: { stat.contentShape(Rectangle()) }
                 .buttonStyle(.plain)
-                .help("List the \(count.formatted()) \(other.noun)")
+                .help(FocusInsightText.otherMetricHelp(snapshot: snapshot, metric: store.metric, now: Date()))
         } else {
             stat
         }
@@ -249,6 +278,18 @@ public struct PopoverView: View {
             .accessibilityLabel("Quit PR Tally")
         }
         .buttonStyle(.borderless)
+    }
+}
+
+/// How wide the popover is. The numbers and settings are laid out to be glanced at in 320pt; the pull request list is
+/// read, and at that width its titles wrap, its filters crowd and the zoom heading's lines wrap beside their buttons, so
+/// it gets more room. Only the list's screen widens, so the summary keeps the shape people know.
+enum PopoverWidth {
+    static let summary: CGFloat = 320
+    static let list: CGFloat = 400
+
+    static func points(showingList: Bool) -> CGFloat {
+        showingList ? list : summary
     }
 }
 

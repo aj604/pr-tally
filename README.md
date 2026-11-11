@@ -22,6 +22,24 @@ The popover always reopens on the numbers, even if you closed it on the list or 
 
 You also get a notification when a refresh takes you past your goal. macOS asks for permission the first time, and you can turn it off in Settings. A goal already met the first time the app sees that month's numbers doesn't notify. Each target (month, metric, and goal value) is announced at most once, so a raised goal or the other metric can notify when a later refresh crosses it.
 
+## Zooming in
+
+When the PR list opens on part of the month (a day from the charts or the goal-hit shortcut, a repo from the top repos, a part of the merge funnel, or the figure your goal doesn't count), a heading above the list names that slice and says what it amounts to:
+
+- For a day: how many PRs it had against an average of the month's finished days ("4 opened · 1.8× an average day's 2.2", "under an average day's 5.6"). Today isn't over, so it's held to what an average day had by the same time ("2 merged so far · about an average day's 2.3 by 9:00 AM") rather than to whole days. The time is when the numbers were last fetched, not the clock, so while refresh is paused or you're offline the comparison stays where the count stopped; if they haven't been fetched since yesterday, the heading says today isn't counted yet rather than comparing an empty day. The figure your goal doesn't count opens on today when today has any, and its heading then says so ("Merged today") and describes today's PRs rather than the month's.
+- Otherwise: its share of the month ("18 of 45 opened this month · 40%")
+- How many of its PRs merged and the median time from opening to merging, against the month's median when the slice is part of the month ("13 merged in a median 16h · 2.6× the month's 6h", "faster than the month's 6h"), plus how many are still open, drafts, or closed without merging, and how long the oldest open one has waited ("2 open, oldest 6.1 days"; drafts don't count, since they wait on you)
+- How big its PRs run: the median lines changed (added plus deleted), against the month's median when the slice is part of the month ("Median 270 lines changed · 2.6× the month's 103")
+- Which repos the PRs are in, unless you zoomed to one
+
+The heading opens folded to its first line, so the list starts near the top; "3 more" beside that line shows the rest, and "Less" folds it again. Once opened it stays open as you step between slices and zoom into others, until you fold it.
+
+The popover widens while the PR list is open, zoomed or not, so titles and the heading's lines wrap less; it returns to its usual width when you go back to the month or open settings.
+
+Zoomed to a repo or a part of the merge funnel, the arrows beside the heading step to the one beside it without going back to the month: the next or previous repo in the top repos' order (every repo with PRs in the count, not just the five shown, with "2 of 6" saying where you are), or the other part of the funnel. Stepping reopens the list on the new slice, clearing its search and filters.
+
+Open, draft and closed are only counted for PRs whose state GitHub reported, and size only for PRs counted since PR Tally started fetching it (the next refresh fills it in). The heading describes the slice you opened; filters you change inside the list don't change it.
+
 ## Install
 
 Requires macOS 14+, Xcode (or, before macOS 27, the Command Line Tools), and the [GitHub CLI](https://cli.github.com) logged in (`gh auth login`).

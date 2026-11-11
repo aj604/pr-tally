@@ -43,6 +43,13 @@ private struct StoredSnapshot: Codable {
         let createdAt: Date
         let mergedAt: Date?
         let repository: String
+        // Optional so a file saved before these were stored still loads, its PRs reading as "unknown".
+        let state: String?
+        let isDraft: Bool?
+        let reviewDecision: String?
+        let checks: String?
+        let additions: Int?
+        let deletions: Int?
 
         init(_ pr: PullRequest) {
             id = pr.id
@@ -51,12 +58,20 @@ private struct StoredSnapshot: Codable {
             createdAt = pr.createdAt
             mergedAt = pr.mergedAt
             repository = pr.repository.nameWithOwner
+            state = pr.state?.rawValue
+            isDraft = pr.isDraft
+            reviewDecision = pr.reviewDecision?.rawValue
+            checks = pr.checks?.rawValue
+            additions = pr.additions
+            deletions = pr.deletions
         }
 
         var pullRequest: PullRequest {
             PullRequest(
                 id: id, title: title, url: url, createdAt: createdAt, mergedAt: mergedAt,
-                repository: .init(nameWithOwner: repository)
+                repository: .init(nameWithOwner: repository), state: state.flatMap(PullRequest.State.init),
+                isDraft: isDraft ?? false, reviewDecision: reviewDecision.flatMap(PullRequest.ReviewDecision.init),
+                checks: checks.flatMap(PullRequest.ChecksState.init), additions: additions, deletions: deletions
             )
         }
     }
